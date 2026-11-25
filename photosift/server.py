@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import cloud, config, contest, editing, export, grouping, imaging, local_vlm, pipeline, retouch, taxonomy
+from . import cloud, config, contest, editing, export, grouping, imaging, local_vlm, pipeline, retouch, sun, taste, taxonomy
 from .cloud import CloudError
 from .context import Ctx
 from .db import photo_dict
@@ -26,6 +26,7 @@ WEB = Path(__file__).parent / "web"
 LIST_COLS = (
     "p.id, p.filename, p.width, p.height, p.taken_at, p.category, p.aesthetic, p.tech, p.sharp, p.prefilter, "
     "p.vlm_score, p.group_id, p.group_size, p.is_best, p.flags, p.rating, p.flag, p.caption, p.event_id, p.error, "
+    "p.light, p.taste, "
     "(SELECT e.recipe IS NOT NULL FROM edits e WHERE e.photo_id=p.id) edited"
 )
 SORTS = {
@@ -37,6 +38,7 @@ SORTS = {
     "aesthetic": "p.aesthetic DESC, p.id",
     "tech": "p.tech DESC, p.id",
     "rating": "p.rating DESC, p.prefilter DESC, p.id",
+    "taste": "(p.taste IS NULL), p.taste DESC, p.prefilter DESC, p.id",
 }
 
 
@@ -72,6 +74,15 @@ class ContestIn(BaseModel):
     sizes: dict = {}
     exclude_flawed: bool = True
     max_per_event: int = 0
+    # what the definition wizard learned
+    constraints: dict = {}
+    profile: dict = {}
+    qa: list = []
+    examples: dict = {}
+    insight: str = ""
+
+    def extra(self) -> dict:
+        return {k: getattr(self, k) for k in contest.BRIEF_EXTRA}
 
 
 class CoachIn(BaseModel):
@@ -151,7 +162,8 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         c = db.one(
             "SELECT COUNT(*) n, SUM(error IS NOT NULL) bad, SUM(vlm IS NOT NULL) annotated, "
             "SUM(is_best=0) dup, SUM(flags != '[]') flawed, SUM(flag='pick') picks, SUM(flag='reject') rejects, "
-            "SUM(prefilter IS NOT NULL) analysed FROM photos"
+            "SUM(prefilter IS NOT NULL) analysed, SUM(taste IS NOT NULL) tasted, "
+            f"SUM(vlm IS NOT NULL AND vlm NOT LIKE '%\"v\": {local_vlm.ANNOTATION_V}%') outdated FROM photos"
         )
         prov = ctx.settings.cloud.provider
         cli = cloud.via_cli(ctx.settings, prov)
@@ -159,6 +171,7 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             "photos": c["n"] or 0, "unreadable": c["bad"] or 0, "analysed": c["analysed"] or 0,
             "annotated": c["annotated"] or 0, "duplicates": c["dup"] or 0, "flawed": c["flawed"] or 0,
             "picks": c["picks"] or 0, "rejects": c["rejects"] or 0,
+            "taste_ready": bool(c["tasted"]), "annotations_outdated": c["outdated"] or 0,
             "embedded": db.val("SELECT COUNT(*) FROM embeddings") or 0,
             "events": db.val("SELECT COUNT(*) FROM events") or 0,
             "folders": db.val("SELECT COUNT(*) FROM folders") or 0,
@@ -312,6 +325,9 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             params.append(int(q["min_rating"]))
         if q.get("annotated") == "1":
             where.append("p.vlm IS NOT NULL")
+        if q.get("light") in ("night", "blue", "golden", "day"):
+            where.append("p.light=?")
+            params.append(q["light"])
         return " AND ".join(where), params
 
     def _search(q: str, limit: int = 240) -> list[tuple[int, float]]:
@@ -332,7 +348,8 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
                     if keep[i]:
                         scores[int(ids[i])] = float(sims[i])
         like = f"%{q}%"
-        for r in ctx.db.all("SELECT id FROM photos WHERE caption LIKE ? OR tags LIKE ? OR filename LIKE ? LIMIT 400", (like, like, like)):
+        # Literal matches also cover what the local model recorded: subject, lighting, composition, mood.
+        for r in ctx.db.all("SELECT id FROM photos WHERE caption LIKE ? OR vlm LIKE ? OR filename LIKE ? LIMIT 400", (like, like, like)):
             scores[r["id"]] = scores.get(r["id"], 0.0) + 1.0
         return sorted(scores.items(), key=lambda kv: -kv[1])[:limit]
 
@@ -340,6 +357,8 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
     def photos(request: Request, offset: int = 0, limit: int = 120, sort: str = "time_desc", q: str = ""):
         params_in = dict(request.query_params)
         where, params = _filters(params_in)
+        if sort == "taste":
+            taste.update_library(ctx)  # picks and rejects may have changed since the last look
         if q.strip():
             hits = _search(q.strip())
             if not hits:
@@ -539,11 +558,13 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         flaw = {}
         for k in ("blurry", "overexposed", "underexposed", "low_contrast"):
             flaw[k] = ctx.db.val("SELECT COUNT(*) FROM photos WHERE flags LIKE ?", (f'%"{k}"%',))
+        lights = {r["light"]: r["n"] for r in ctx.db.all("SELECT light, COUNT(*) n FROM photos WHERE light IS NOT NULL GROUP BY light")}
         return {
             "folders": folders(),
             "events": [{"id": e["id"], "title": e["title"], "count": e["count"]} for e in events()],
             "categories": categories(),
             "flaws": flaw,
+            "lights": [{"key": k, "label": sun.LABELS[k], "count": lights[k]} for k in ("golden", "blue", "night", "day") if k in lights],
         }
 
     # -------------------------------------------------------------- contests
@@ -559,7 +580,7 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
     @app.post("/api/contests")
     def new_contest(body: ContestIn):
         cid = contest.create(ctx, body.name, body.theme, body.rules, body.notes, body.scope, body.sizes,
-                             body.exclude_flawed, body.max_per_event)  # fmt: skip
+                             body.exclude_flawed, body.max_per_event, body.extra())  # fmt: skip
         return contest.state(ctx, cid)
 
     def _contest(cid: int) -> dict:
@@ -579,6 +600,8 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             "theme": body.theme.strip(), "rules": body.rules.strip(), "notes": body.notes.strip(), "scope": body.scope,
             "sizes": {**contest.DEFAULT_SIZES, **body.sizes}, "exclude_flawed": body.exclude_flawed,
             "max_per_event": body.max_per_event,
+            # an edit from the plain form leaves the wizard's findings in place unless it sends new ones
+            **{k: (v or c["brief"].get(k)) for k, v in body.extra().items() if v or c["brief"].get(k)},
         }  # fmt: skip
         ctx.db.run("UPDATE contests SET name=?, brief=? WHERE id=?", (body.name.strip() or c["name"], json.dumps(brief, ensure_ascii=False), cid))
         return _contest(cid)
@@ -622,20 +645,15 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
     @app.get("/api/contests/{cid}/outgoing/{step}")
     def outgoing(cid: int, step: str):
         """Exactly which photos the next external step would upload, so the user can look before agreeing."""
-        c = _contest(cid)
-        if step == "calibrate":
-            ids = contest.calibration_sample(ctx, cid, int(c["brief"]["sizes"]["calibration"]))
-            extra = 1500
-        elif step == "finals":
-            ids = contest.finalists(ctx, cid)
-            extra = contest.JURY_SIZE * c["image_tokens"] + 3000
-        else:
+        _contest(cid)
+        try:
+            out = contest.outgoing(ctx, cid, step)
+        except KeyError:
             raise HTTPException(404)
-        est = len(ids) * (c["image_tokens"] + 250) + extra
         prov = ctx.settings.cloud.provider
         cli = cloud.via_cli(ctx.settings, prov)
         model = (ctx.settings.cloud.cli_models if cli else ctx.settings.cloud.models).get(prov, "")
-        return {"photo_ids": ids, "est_tokens": est, "image_px": ctx.settings.cloud.image_px, "via": "cli" if cli else "api",
+        return {**out, "image_px": ctx.settings.cloud.image_px, "via": "cli" if cli else "api",
                 "provider": cloud.LABELS[prov], "model": model or ("工具的預設模型" if cli else "")}  # fmt: skip
 
     @app.post("/api/contests/{cid}/calibrate")

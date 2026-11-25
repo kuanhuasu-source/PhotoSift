@@ -215,11 +215,18 @@ ANNOTATE_SYSTEM = (
 ANNOTATE_USER = (
     "請描述並評估這張照片：\n"
     "- caption：一句話說明畫面內容（20～40 字）\n"
+    "- subject：畫面的主體是什麼，幾個字即可\n"
     "- tags：5～8 個關鍵詞（主體、場景、時間、風格）\n"
     "- scene：從清單中選一個最符合的主題\n"
+    "- setting：室外或室內\n"
+    "- shot：景別，從清單中選一個\n"
+    "- lighting：主要的光線型態，從清單中選一個\n"
+    "- composition：用到的構圖手法，從清單中選 1～3 個\n"
+    "- palette：主要的色調，幾個字即可（例如「暖橘與深藍」）\n"
     "- mood：氛圍或情緒，幾個字即可\n"
     "- people：清楚可見的人數\n"
-    "- composition / lighting / color / subject / story / overall：1～10 分\n"
+    "- moment：是否捕捉到稍縱即逝的瞬間（表情、動作、光線）\n"
+    "- composition_score / lighting_score / color / subject_score / story / overall：1～10 分\n"
     "  （構圖、光線、色彩、主體明確度、故事性與意境、整體印象）\n"
     "- flaws：明顯缺點，沒有就給空陣列"
 )
@@ -227,23 +234,39 @@ ANNOTATE_USER = (
 SCENES = [label for _, label, _ in taxonomy.CATEGORIES]
 SCENE_KEY = {label: key for key, label, _ in taxonomy.CATEGORIES}
 
-SCORE_KEYS = ["composition", "lighting", "color", "subject", "story", "overall"]
+SHOTS = ["遠景", "全景", "中景", "特寫", "微距"]
+LIGHTING = ["順光", "側光", "逆光", "柔光", "硬光", "低光", "人造光", "混合光"]
+COMPOSITION = ["三分法", "對稱", "引導線", "框景", "留白", "對角線", "重複圖案", "中央構圖", "前景層次"]
+ANNOTATION_V = 2  # stored with each annotation; older ones are refreshed the next time annotation runs
+
+# name in the model's answer -> name in the stored record
+SCORE_FIELDS = {"composition_score": "composition", "lighting_score": "lighting", "color": "color",
+                "subject_score": "subject", "story": "story", "overall": "overall"}  # fmt: skip
+SCORE_KEYS = list(SCORE_FIELDS.values())
 SCORE_WEIGHTS = {"composition": 0.2, "lighting": 0.15, "color": 0.1, "subject": 0.15, "story": 0.2, "overall": 0.2}
 
 ANNOTATE_SCHEMA = {
     "type": "object",
     "properties": {
         "caption": {"type": "string"},
+        "subject": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string"}},
         "scene": {"type": "string", "enum": SCENES},
+        "setting": {"type": "string", "enum": ["室外", "室內"]},
+        "shot": {"type": "string", "enum": SHOTS},
+        "lighting": {"type": "string", "enum": LIGHTING},
+        "composition": {"type": "array", "items": {"type": "string", "enum": COMPOSITION}},
+        "palette": {"type": "string"},
         "mood": {"type": "string"},
         "people": {"type": "integer"},
-        **{k: {"type": "integer"} for k in SCORE_KEYS},
+        "moment": {"type": "boolean"},
+        **{k: {"type": "integer"} for k in SCORE_FIELDS},
         "flaws": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["caption", "tags", "scene", "mood", "people", *SCORE_KEYS, "flaws"],
+    "required": ["caption", "subject", "tags", "scene", "setting", "shot", "lighting", "composition", "palette",
+                 "mood", "people", "moment", *SCORE_FIELDS, "flaws"],
     "additionalProperties": False,
-}
+}  # fmt: skip
 
 
 NO_FLAW = {"無", "沒有", "無明顯缺點", "無明顯缺陷", "none", "None", "N/A", "-"}
@@ -256,21 +279,67 @@ def clamp_score(v, lo: int = 1, hi: int = 10) -> int:
         return (lo + hi) // 2
 
 
+def _pick(v, allowed: list[str]) -> str | None:
+    v = str(v or "").strip()
+    return v if v in allowed else None
+
+
 def annotate(vlm: LocalVLM, image: bytes) -> dict:
-    """One photo -> caption, tags and six craft scores. Returns the cleaned record."""
-    d = vlm.chat_json(ANNOTATE_SYSTEM, ANNOTATE_USER, [image], ANNOTATE_SCHEMA, max_tokens=700)
+    """One photo -> description, structured attributes and six craft scores. Returns the cleaned record."""
+    d = vlm.chat_json(ANNOTATE_SYSTEM, ANNOTATE_USER, [image], ANNOTATE_SCHEMA, max_tokens=900)
     out = {
+        "v": ANNOTATION_V,
         "caption": str(d.get("caption", "")).strip()[:200],
+        # Attributes are stored under their own names: "subject", "lighting" and "composition" are the scores below.
+        "main": str(d.get("subject", "")).strip()[:40],
         "tags": [str(t).strip()[:20] for t in (d.get("tags") or []) if str(t).strip()][:10],
         "scene": SCENE_KEY.get(str(d.get("scene", "")).strip()),
+        "setting": _pick(d.get("setting"), ["室外", "室內"]),
+        "shot": _pick(d.get("shot"), SHOTS),
+        "light_type": _pick(d.get("lighting"), LIGHTING),
+        "techniques": [c for c in (d.get("composition") or []) if c in COMPOSITION][:3],
+        "palette": str(d.get("palette", "")).strip()[:30],
         "mood": str(d.get("mood", "")).strip()[:40],
         "people": clamp_score(d.get("people", 0), 0, 99),
+        "moment": d.get("moment") is True,
         "flaws": [str(t).strip()[:60] for t in (d.get("flaws") or []) if str(t).strip() and str(t).strip() not in NO_FLAW][:5],
     }
-    for k in SCORE_KEYS:
-        out[k] = clamp_score(d.get(k))
+    for field, k in SCORE_FIELDS.items():
+        out[k] = clamp_score(d.get(field, d.get(k)))
     out["score"] = round(sum(out[k] * w for k, w in SCORE_WEIGHTS.items()) * 10, 1)
     return out
+
+
+def card(p: dict, extra: str = "") -> str:
+    """One photo as a line of text: what a model can judge it by without seeing it.
+
+    About 60 tokens, against roughly a thousand for the picture itself.
+    """
+    v = p.get("vlm") or {}
+    if isinstance(v, str):
+        v = json.loads(v)
+    bits = [v.get("caption") or p.get("caption") or "（尚未標註）"]
+    if v.get("main"):
+        bits.append(f"主體：{v['main']}")
+    look = [x for x in (v.get("shot"), v.get("light_type"), LIGHT_ZH.get(p.get("light") or "")) if x]
+    if v.get("techniques"):
+        look.append("、".join(v["techniques"]))
+    if look:
+        bits.append("／".join(look))
+    if v.get("mood"):
+        bits.append(f"氛圍：{v['mood']}")
+    if v.get("people"):
+        bits.append(f"{v['people']} 人")
+    if v.get("moment"):
+        bits.append("抓到瞬間")
+    if v.get("flaws"):
+        bits.append("缺點：" + "、".join(v["flaws"][:2]))
+    if extra:
+        bits.append(extra)
+    return "｜".join(bits)
+
+
+LIGHT_ZH = {"night": "夜晚", "blue": "藍調時刻", "golden": "黃金時刻", "day": ""}
 
 
 def title_event(vlm: LocalVLM, captions: list[str], place: str | None) -> str | None:

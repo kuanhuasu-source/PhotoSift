@@ -33,6 +33,8 @@ def fake(spec, ids):
         item = spec["items"]
         if item.get("type") == "object" and "id" in item.get("properties", {}):
             return [dict(fake(item, ids), id=i) for i in ids]
+        if item.get("type") == "object" and "no" in item.get("properties", {}):
+            return [dict(fake(item, ids), no=k) for k in (1, 2, 3)]  # numbers on a contact sheet
         return [fake(item, ids), fake(item, ids), fake(item, ids)]
     if t == "integer":
         return 6
@@ -253,10 +255,12 @@ def test_contest_runs_through_the_subscription_tool(ctx, library, tools, monkeyp
         assert wait(client)["status"] == "done"
         c = client.get(f"/api/contests/{cid}").json()
         assert c["scored_teacher"] == 4 and c["scored_final"] == 3 and len(c["summary"]["picks"]) == 1
+        reused = c["summary"]["reused"]
 
     calls = [x for x in tools.calls() if x["tool"] == "claude"]
     with_photos = [x for x in calls if x["files"]]
-    assert sum(len(x["files"]) for x in with_photos) == 1 + 4 + 3 + 3  # test swatch, calibration, critique, jury
+    # test swatch, calibration photos, one contact sheet, finalists not already seen, one jury sheet
+    assert sum(len(x["files"]) for x in with_photos) == 1 + 4 + 1 + (3 - reused) + 1
     assert all(x["api_key_visible"] is False for x in calls)
     usage = ctx.db.all("SELECT provider, model, purpose FROM cloud_calls ORDER BY id")
     assert {r["provider"] for r in usage} == {"claude"} and all(r["model"].endswith("（訂閱）") for r in usage)

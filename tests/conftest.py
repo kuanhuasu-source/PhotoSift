@@ -149,7 +149,8 @@ class FakeProvider:
 
         images = [p for p in parts if isinstance(p, Img)]
         ids = [int(p.split("照片編號 ")[1].split("：")[0]) for p in parts if isinstance(p, str) and p.startswith("照片編號 ")]
-        self.calls.append({"images": len(images), "ids": ids, "props": list(schema["properties"])})
+        self.calls.append({"images": len(images), "ids": ids, "props": list(schema["properties"]),
+                           "text": "\n".join(p for p in parts if isinstance(p, str))})  # fmt: skip
         props = schema["properties"]
         if "criteria" in props:
             data = {
@@ -159,6 +160,8 @@ class FakeProvider:
                     {"name": "技術", "weight": 20, "description": "d", "high": "h", "low": "l"},
                 ],
                 "judge_brief": "評審須知", "pitfalls": ["雜亂"], "ideal": "理想作品",
+                "probes": [{"zh": "安靜的街道", "en": "a quiet street"}, {"zh": "水邊的倒影", "en": "reflections on water"}],
+                "avoid": [{"zh": "擁擠的人群", "en": "a crowd"}], "plan": ["最重視主題", "雜亂會扣分"],
             }  # fmt: skip
         elif "photos" in props:
             item = props["photos"]["items"]["properties"]
@@ -175,8 +178,19 @@ class FakeProvider:
                     else:
                         row[k] = (3 + (pid * 7 + n) % 7) if spec["type"] == "integer" else f"評語 {pid}"
                 data["photos"].append(row)
-        elif "ranking" in props:
-            data = {"ranking": [{"id": pid, "why": f"理由 {pid}"} for pid in reversed(ids)], "overall": "總評"}
+        elif "ranking" in props:  # jury: the sheet's numbers, best first; here simply reversed
+            import re
+
+            text = "\n".join(p for p in parts if isinstance(p, str))
+            n = len(re.findall(r"^\d+\.《", text, flags=re.M))
+            data = {"ranking": [{"no": k, "why": f"理由 {k}"} for k in range(n, 0, -1)], "overall": "總評"}
+        elif "picks" in props:  # contact-sheet triage: take the first few numbers on offer
+            import re
+
+            text = "\n".join(p for p in parts if isinstance(p, str))
+            want = int(re.search(r"最多 (\d+) 張", text).group(1))
+            shown = len(re.findall(r"^\d+\. ", text, flags=re.M))
+            data = {"picks": [{"no": k, "why": f"值得看 {k}"} for k in range(1, min(want, shown) + 1)]}
         elif "notes" in props:
             data = {"notes": "請把技術分數打嚴一點", "observations": ["技術分數偏高"]}
         elif "verdict" in props:

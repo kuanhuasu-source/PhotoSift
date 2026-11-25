@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
@@ -187,7 +188,17 @@ def _exif_pillow(path: Path) -> dict:
         "iso": int(iso) if _f(iso) else None,
         "lat": _dms(gps.get(2), gps.get(1)) if gps.get(2) else None,
         "lon": _dms(gps.get(4), gps.get(3)) if gps.get(4) else None,
+        "tz_offset": _tz(sub.get(0x9011) or sub.get(0x9010)),
     }
+
+
+def _tz(s) -> int | None:
+    """EXIF OffsetTimeOriginal ("+08:00") -> minutes east of UTC."""
+    m = re.match(r"^\s*([+-])(\d{2}):?(\d{2})", str(s or ""))
+    if not m:
+        return None
+    minutes = int(m.group(2)) * 60 + int(m.group(3))
+    return minutes if m.group(1) == "+" else -minutes
 
 
 def _exif_exifread(path: Path) -> dict:
@@ -226,6 +237,7 @@ def _exif_exifread(path: Path) -> dict:
         "iso": int(first("EXIF ISOSpeedRatings")) if _f(first("EXIF ISOSpeedRatings")) else None,
         "lat": dms("GPS GPSLatitude", "GPS GPSLatitudeRef"),
         "lon": dms("GPS GPSLongitude", "GPS GPSLongitudeRef"),
+        "tz_offset": _tz(val("EXIF OffsetTimeOriginal") or val("EXIF OffsetTime")),
     }
 
 

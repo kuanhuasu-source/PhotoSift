@@ -68,8 +68,9 @@ def process_file(path: Path) -> dict:
 COLS = [
     "path", "raw_path", "filename", "size", "mtime", "width", "height", "taken_at", "taken_ts", "time_source",
     "lat", "lon", "camera", "lens", "focal", "aperture", "shutter", "iso",
-    "sharp", "exposure", "contrast", "colorful", "tech", "flags", "error",
+    "sharp", "exposure", "contrast", "colorful", "tech", "flags", "error", "tz_offset", "meta_v",
 ]  # fmt: skip
+META_V = 2  # bump when read_meta learns something new; older rows are re-read without decoding pixels
 
 # Everything derived from pixels is cleared when a file changes on disk.
 RESET = (
@@ -136,6 +137,7 @@ def ingest_folder(
                 path, raw = pending.pop(fut)
                 rec = fut.result()
                 rec["raw_path"] = str(raw) if raw else None
+                rec["meta_v"] = META_V
                 rec["flags"] = json.dumps(rec.get("flags", []))
                 thumb = rec.pop("thumb", None)
                 vals = [rec.get(c) for c in COLS]
@@ -172,3 +174,19 @@ def ingest_folder(
 
     db.run("UPDATE folders SET last_scan=? WHERE id=?", (time.time(), folder_id))
     return {"found": len(files), "processed": done, "added": added, "failed": failed, "removed": len(gone)}
+
+
+def refresh_meta(ctx: Ctx, progress: Callable[[int, int, str], None] = lambda done, total, msg: None) -> int:
+    """Re-reads EXIF for rows written before the reader learned a field. Fast: no image is decoded."""
+    rows = ctx.db.all("SELECT id, path FROM photos WHERE meta_v < ? AND error IS NULL", (META_V,))
+    done = 0
+    for i, r in enumerate(rows):
+        try:
+            m = imaging.read_meta(Path(r["path"]))
+            ctx.db.run("UPDATE photos SET tz_offset=?, meta_v=? WHERE id=?", (m.get("tz_offset"), META_V, r["id"]))
+            done += 1
+        except OSError:
+            ctx.db.run("UPDATE photos SET meta_v=? WHERE id=?", (META_V, r["id"]))  # file gone: do not retry forever
+        if i % 50 == 0:
+            progress(i, len(rows), "更新拍攝資訊")
+    return done

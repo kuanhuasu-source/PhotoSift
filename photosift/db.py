@@ -113,12 +113,34 @@ CREATE TABLE IF NOT EXISTS cloud_calls (
 """
 
 
+MIGRATIONS = {
+    "photos": {
+        "tz_offset": "INTEGER",                   # minutes east of UTC, when the camera recorded it
+        "sun_elev": "REAL",                       # degrees above the horizon at capture
+        "light": "TEXT",                          # night | blue | golden | day
+        "meta_v": "INTEGER NOT NULL DEFAULT 0",   # which version of the EXIF reader filled this row
+        "taste": "REAL",                          # 0-100: how much it resembles what the user picks
+    },
+    "contest_scores": {"triage": "TEXT"},         # json: what the external model said on the contact sheet
+    "cloud_calls": {"photos": "INTEGER NOT NULL DEFAULT 0"},  # photos shown, counting each tile of a contact sheet
+}
+
+
 class DB:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Adds columns introduced after a library was first created. Existing data is kept."""
+        for table, cols in MIGRATIONS.items():
+            have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in cols.items():
+                if name not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     @property
     def conn(self) -> sqlite3.Connection:

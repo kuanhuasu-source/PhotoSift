@@ -301,3 +301,35 @@ def side_by_side(before: Image.Image, after: Image.Image, height: int = 640) -> 
     out.paste(a, (0, 0))
     out.paste(b, (a.width + gap, 0))
     return out
+
+
+def contact_sheet(tiles: list[Image.Image], numbers: list[int], cols: int = 4, cell: int = 384) -> Image.Image:
+    """Numbered thumbnails on one canvas.
+
+    One sheet costs an external model about as much as two or three single photos
+    and shows it sixteen. Fine detail is lost, but composition, colour and impact
+    are not, which is what a first cut is judged on.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    rows = (len(tiles) + cols - 1) // cols
+    gap = 6
+    sheet = Image.new("RGB", (cols * cell + (cols + 1) * gap, rows * cell + (rows + 1) * gap), (24, 24, 24))
+    draw = ImageDraw.Draw(sheet)
+    try:
+        font = ImageFont.load_default(size=max(cell // 11, 18))
+    except TypeError:  # older Pillow: the built-in bitmap font only
+        font = ImageFont.load_default()
+    for i, (im, no) in enumerate(zip(tiles, numbers)):
+        t = im.convert("RGB")
+        t.thumbnail((cell, cell), Image.Resampling.LANCZOS)
+        x = gap + (i % cols) * (cell + gap) + (cell - t.width) // 2
+        y = gap + (i // cols) * (cell + gap) + (cell - t.height) // 2
+        sheet.paste(t, (x, y))
+        label = str(no)
+        box = draw.textbbox((0, 0), label, font=font)
+        w, h = box[2] - box[0] + 14, box[3] - box[1] + 12
+        cx, cy = gap + (i % cols) * (cell + gap), gap + (i // cols) * (cell + gap)
+        draw.rectangle([cx, cy, cx + w, cy + h], fill=(0, 0, 0))
+        draw.text((cx + 7 - box[0], cy + 5 - box[1]), label, fill=(255, 255, 255), font=font)
+    return sheet

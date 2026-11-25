@@ -241,8 +241,8 @@ def test_finals_bring_an_edit_for_each_finalist(client, tmp_path):
     assert wait(client)["status"] == "done"
     finalists = [r for r in client.get(f"/api/contests/{cid}/results").json() if r["final_rank"]]
     assert len(finalists) == 3
-    # the edits came in the same finals calls: 3 critique images + 3 jury images, nothing extra
-    assert sum(c["images"] for c in client.prov.calls) - images_before == 6
+    # the edits came in the same finals calls: one triage sheet, 3 critique images, one jury sheet, nothing extra
+    assert sum(c["images"] for c in client.prov.calls) - images_before == 1 + 3 + 1
     for r in finalists:
         sug = retouch.load(ctx, r["photo_id"])["suggested"]["cloud"]
         assert sug["recipe"]["exposure"] == 0.2 and sug["recipe"]["crop"]["left"] == 0.05 and sug["summary"]

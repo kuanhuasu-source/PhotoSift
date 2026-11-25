@@ -167,9 +167,29 @@ def rebuild(ctx: Ctx, progress=lambda done, total, msg: None) -> dict:
     )
 
     progress(2, 4, "切分事件")
+    update_light(ctx)
     n_events = rebuild_events(ctx)
+    ctx.bump()
+    from . import taste
+
+    taste.update_library(ctx)
     progress(4, 4, "完成")
     return {"photos": len(ids), "groups": sum(1 for g in groups.values() if len(g) > 1), "events": n_events}
+
+
+def update_light(ctx: Ctx) -> int:
+    """Golden hour, blue hour, day or night, worked out from where and when each photo was taken."""
+    from . import sun
+
+    rows = ctx.db.all(
+        "SELECT id, taken_ts, lat, lon, tz_offset FROM photos WHERE time_source='exif' AND lat IS NOT NULL AND lon IS NOT NULL"
+    )
+    out = []
+    for r in rows:
+        elev, phase = sun.light_for(r["taken_ts"], r["lat"], r["lon"], r["tz_offset"])
+        out.append((elev, phase, r["id"]))
+    ctx.db.many("UPDATE photos SET sun_elev=?, light=? WHERE id=?", out)
+    return len(out)
 
 
 def rebuild_events(ctx: Ctx) -> int:

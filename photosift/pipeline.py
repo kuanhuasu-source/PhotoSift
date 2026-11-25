@@ -36,7 +36,8 @@ def annotate(ctx: Ctx, job: Job, limit: int = 0, redo: bool = False) -> dict:
     vlm = local_vlm.LocalVLM(ctx.settings.local, role="annotator")
     where = "error IS NULL AND is_best=1 AND COALESCE(flag,'') != 'reject'"
     if not redo:
-        where += " AND vlm IS NULL"
+        # Not yet annotated, or annotated before the record gained its newer fields.
+        where += f" AND (vlm IS NULL OR vlm NOT LIKE '%\"v\": {local_vlm.ANNOTATION_V}%')"
     rows = ctx.db.all(f"SELECT id FROM photos WHERE {where} ORDER BY (flag='pick') DESC, prefilter DESC, id")
     ids = [r["id"] for r in rows]
     if limit:
@@ -96,6 +97,7 @@ def analyze(ctx: Ctx, job: Job, annotate_limit: int = 0) -> dict:
         if job.cancelled():
             return out
         out["folders"].append({"path": f["path"], **ingest.ingest_folder(ctx, f["id"], job.progress, job.cancelled)})
+    ingest.refresh_meta(ctx, job.progress)
     ctx.bump()
     if job.cancelled():
         return out

@@ -114,13 +114,15 @@ def test_contest_over_http(client):
     assert len(out["photo_ids"]) == 4 and out["est_tokens"] > 0
     client.post(f"/api/contests/{cid}/calibrate")
     assert wait(client)["status"] == "done"
-    assert len(client.get(f"/api/contests/{cid}/outgoing/finals").json()["photo_ids"]) == 3
+    out = client.get(f"/api/contests/{cid}/outgoing/finals").json()
+    assert out["mode"] == "sheets" and len(out["photo_ids"]) == 8 and out["full"] == 3  # all eight go on one sheet
     client.post(f"/api/contests/{cid}/finals")
     assert wait(client)["status"] == "done"
 
     c = client.get(f"/api/contests/{cid}").json()
-    assert c["scored_local"] == 8 and c["scored_teacher"] == 4 and c["scored_final"] == 3
-    assert len(c["summary"]["picks"]) == 2 and c["usage"]["images_sent"] == 4 + 3 + 3
+    assert c["scored_local"] == 8 and c["scored_teacher"] == 4 and c["scored_final"] == 3 and c["scored_triage"] == 8
+    reused = c["summary"]["reused"]
+    assert len(c["summary"]["picks"]) == 2 and c["usage"]["images_sent"] == 4 + 1 + (3 - reused) + 1
     res = client.get(f"/api/contests/{cid}/results").json()
     assert res[0]["final_rank"] == 1 and len(res) == 8
     assert client.get("/api/usage").json()["total_tokens"] == c["usage"]["total_tokens"]
