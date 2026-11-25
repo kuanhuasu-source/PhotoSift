@@ -147,19 +147,21 @@ class LocalVLM:
         temperature: float = 0.2,
     ) -> dict:
         images = images or []
-        try:
-            if self.s.api == "openai":
-                text = self._chat_openai(system, user, images, schema, max_tokens, temperature)
-            else:
-                text = self._chat_ollama(system, user, images, schema, max_tokens, temperature)
-        except httpx.HTTPStatusError as e:
-            raise LocalModelError(f"地端模型回應錯誤 {e.response.status_code}：{e.response.text[:200]}") from e
-        except httpx.HTTPError as e:
-            raise LocalModelError(f"地端模型連線失敗：{type(e).__name__}") from e
-        try:
-            return parse_json(text)
-        except Exception as e:
-            raise LocalModelError(f"地端模型沒有回傳有效的 JSON：{text[:120]!r}") from e
+        send = self._chat_openai if self.s.api == "openai" else self._chat_ollama
+        text = ""
+        # A reply cut off mid-JSON is the usual failure with small models, so try once more with room to finish.
+        for budget in (max_tokens, max_tokens * 2):
+            try:
+                text = send(system, user, images, schema, budget, temperature)
+            except httpx.HTTPStatusError as e:
+                raise LocalModelError(f"地端模型回應錯誤 {e.response.status_code}：{e.response.text[:200]}") from e
+            except httpx.HTTPError as e:
+                raise LocalModelError(f"地端模型連線失敗：{type(e).__name__}") from e
+            try:
+                return parse_json(text)
+            except Exception:
+                continue
+        raise LocalModelError(f"地端模型沒有回傳有效的 JSON：{text[:120]!r}")
 
     def _chat_ollama(self, system, user, images, schema, max_tokens, temperature) -> str:
         body = {

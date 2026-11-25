@@ -7,7 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
-from . import contest
+from . import contest, editing, imaging, retouch
 from .context import Ctx
 
 
@@ -45,6 +45,33 @@ def copy_photos(ctx: Ctx, photo_ids: list[int], dest: str, include_raw: bool = T
     return {"copied": copied, "missing": missing, "dest": str(d)}
 
 
+def save_edited(ctx: Ctx, pid: int, dest: Path, prefix: str = "") -> Path | None:
+    """Renders the photo's saved edit at full size into `dest`. Returns None when there is no edit."""
+    recipe = retouch.load(ctx, pid)["recipe"]
+    r = ctx.db.one("SELECT path FROM photos WHERE id=?", (pid,))
+    if not recipe or r is None or not Path(r["path"]).exists():
+        return None
+    src = Path(r["path"])
+    im, _ = imaging.load_image(src)  # full resolution, original colour space
+    out = editing.render(im, recipe)
+    target = _free_name(dest, f"{prefix}{src.stem}_修圖.jpg")
+    extra = {}
+    if out.info.get("icc_profile"):
+        extra["icc_profile"] = out.info["icc_profile"]
+    exif = imaging.original_exif(src)  # when and with what it was taken stays with the edited copy
+    if exif:
+        extra["exif"] = exif
+    out.save(target, "JPEG", quality=95, subsampling=0, **extra)
+    return target
+
+
+def export_edited(ctx: Ctx, photo_ids: list[int], dest: str) -> dict:
+    d = Path(dest).expanduser()
+    d.mkdir(parents=True, exist_ok=True)
+    done = [p for p in (save_edited(ctx, pid, d) for pid in photo_ids) if p]
+    return {"exported": len(done), "skipped": len(photo_ids) - len(done), "dest": str(d), "files": [p.name for p in done]}
+
+
 def export_contest(ctx: Ctx, cid: int, dest: str, top: int | None = None, include_raw: bool = True) -> dict:
     """Finalists in rank order plus a readable report of the jury's notes."""
     c = contest.get(ctx, cid)
@@ -58,6 +85,9 @@ def export_contest(ctx: Ctx, cid: int, dest: str, top: int | None = None, includ
         title = _safe((r["final"] or {}).get("title", ""))
         prefix[r["photo_id"]] = f"{i + 1:02d}_{title}_" if title else f"{i + 1:02d}_"
     out = copy_photos(ctx, [r["photo_id"] for r in rows], dest, include_raw, prefix)
+    # Photos you edited are exported twice: the untouched original and the edited version.
+    edited = [save_edited(ctx, r["photo_id"], Path(out["dest"]), prefix[r["photo_id"]]) for r in rows]
+    out["edited"] = sum(1 for p in edited if p)
 
     rubric = c["rubric"] or {"criteria": []}
     names = {cr["key"]: cr["name"] for cr in rubric["criteria"]}

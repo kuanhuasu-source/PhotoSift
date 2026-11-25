@@ -114,17 +114,25 @@ class FakeVLM:
         if images:
             im = Image.open(io.BytesIO(images[0])).convert("L").resize((8, 8))
             level = int(np.clip(round(np.asarray(im).mean() / 255 * 9) + 1, 1, 10))
-        out = {}
-        for k, spec in props.items():
-            if spec.get("type") == "integer":
-                out[k] = level
-            elif spec.get("type") == "array":
-                out[k] = ["測試"]
-            elif "enum" in spec:
-                out[k] = spec["enum"][0]
-            else:
-                out[k] = "測試文字"
-        return out
+        if "verdict" in props:  # reviewing its own edit: ask for a little less once, then accept
+            self.reviews = getattr(self, "reviews", 0) + 1
+            first = self.reviews % 2 == 1
+            return {"verdict": "less" if first else "good", **{k: 0 for k in props if props[k].get("type") == "integer"},
+                    "exposure": -1 if first else 0, "comment": "有點過亮" if first else "剛好"}  # fmt: skip
+
+        def fake(spec):
+            t = spec.get("type")
+            if t == "integer":
+                return level
+            if t == "boolean":
+                return False
+            if t == "array":
+                return [fake(spec["items"])]
+            if t == "object":
+                return {k: fake(v) for k, v in spec["properties"].items()}
+            return spec["enum"][0] if "enum" in spec else "測試文字"
+
+        return {k: fake(spec) for k, spec in props.items()}
 
 
 class FakeProvider:
@@ -160,12 +168,20 @@ class FakeProvider:
                 for k, spec in item.items():
                     if k == "id":
                         continue
-                    row[k] = (3 + (pid * 7 + n) % 7) if spec["type"] == "integer" else f"評語 {pid}"
+                    if spec["type"] == "object":  # the jury's edit for a finalist
+                        row[k] = {"exposure": 1, "contrast": 0, "highlights": -1, "shadows": 1, "warmth": 0, "saturation": 0,
+                                  "clarity": 1, "vignette": 0, "black_white": False, "straighten": False,
+                                  "crop_left": 5, "crop_top": 0, "crop_right": 95, "crop_bottom": 100}  # fmt: skip
+                    else:
+                        row[k] = (3 + (pid * 7 + n) % 7) if spec["type"] == "integer" else f"評語 {pid}"
                 data["photos"].append(row)
         elif "ranking" in props:
             data = {"ranking": [{"id": pid, "why": f"理由 {pid}"} for pid in reversed(ids)], "overall": "總評"}
         elif "notes" in props:
             data = {"notes": "請把技術分數打嚴一點", "observations": ["技術分數偏高"]}
+        elif "verdict" in props:
+            data = {"verdict": "less", "exposure": -1, "contrast": 0, "highlights": 0, "shadows": 0, "warmth": 0,
+                    "saturation": 0, "comment": "有點過亮"}  # fmt: skip
         else:
             raise AssertionError(f"unexpected schema: {list(props)}")
         return CloudResult(data=data, input_tokens=1000 * max(len(images), 1), output_tokens=200, model=self.model,
@@ -177,10 +193,11 @@ class FakeProvider:
 
 @pytest.fixture
 def fakes(monkeypatch):
-    from photosift import contest, local_vlm
+    from photosift import contest, local_vlm, retouch
 
     vlm = FakeVLM()
     prov = FakeProvider()
     monkeypatch.setattr(local_vlm, "LocalVLM", lambda *a, **k: vlm)
     monkeypatch.setattr(contest, "get_provider", lambda *a, **k: prov)
+    monkeypatch.setattr(retouch, "get_provider", lambda *a, **k: prov)
     return vlm, prov

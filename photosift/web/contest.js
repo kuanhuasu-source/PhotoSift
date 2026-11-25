@@ -145,7 +145,7 @@ function Contest({ id, onEdit, onDeleted }) {
     if (!dest) return;
     try {
       const r = await api(`/contests/${id}/export`, { body: { dest } });
-      toast(`已複製 ${r.copied} 張與評審報告到 ${r.dest}（原始檔沒有變動）`);
+      toast(`已複製 ${r.copied} 張${r.edited ? `、${r.edited} 張修圖後的版本` : ''}與評審報告到 ${r.dest}（原始檔沒有變動）`);
     } catch (e) { fail(e); }
   };
   const remove = async () => {
@@ -220,7 +220,7 @@ function Contest({ id, onEdit, onDeleted }) {
         <${Icon} name="cloud" size=${14} /> ${c.summary ? '重新決選' : '選出入圍'}</button>`}>
       ${c.summary && c.summary.overall && html`<div class="note"><b>總評與投稿建議</b><br />${c.summary.overall}</div>`}
       ${c.summary && html`<div class="row"><button class="btn" onClick=${exportOut}><${Icon} name="out" size=${14} /> 匯出入圍照片與評審報告</button>
-        <span class="small muted">複製到你指定的資料夾，檔名依名次編號。原始檔不會變動。</span></div>`}
+        <span class="small muted">複製到你指定的資料夾，檔名依名次編號。修過圖的照片會多匯出一份修圖後的版本。原始檔不會變動。</span></div>`}
     <//>
 
     ${results.length > 0 && html`<div class="card" style="margin-top:14px">
@@ -228,13 +228,15 @@ function Contest({ id, onEdit, onDeleted }) {
         <span class="small muted">${n0(results.length)} 張已評</span></div>
       ${c.summary && c.summary.ranking.length > 0 && html`<p class="small muted">前 ${c.summary.ranking.length} 名的順序來自並排比較，所以不一定和各自的分數高低相同；其餘依個別分數排列。</p>`}
       ${shown.map((r, i) => html`<${Result} key=${r.photo_id} r=${r} i=${i} names=${names} pick=${picks.has(r.photo_id)} why=${why[r.photo_id]}
-        onOpen=${() => setView({ ids: shown.map((x) => x.photo_id), index: i })} />`)}
+        onOpen=${() => setView({ ids: shown.map((x) => x.photo_id), index: i })}
+        onEdit=${() => setView({ ids: shown.map((x) => x.photo_id), index: i, mode: 'edit' })} />`)}
       ${results.length > shown.length && html`<div style="text-align:center;padding-top:12px"><button class="btn" onClick=${() => setShowAll(true)}>顯示全部 ${results.length} 張</button></div>`}
     </div>`}
 
     ${confirm && html`<${ConfirmUpload} c=${confirm} onClose=${() => setConfirm(null)}
       onGo=${() => { const step = confirm.step; setConfirm(null); startJob(`/contests/${id}/${step}`).then(load); }} />`}
-    ${view && html`<${PhotoViewer} ids=${view.ids} index=${view.index} onClose=${() => { setView(null); load(); }} />`}
+    ${view && html`<${PhotoViewer} ids=${view.ids} index=${view.index} startMode=${view.mode || 'info'} contestId=${id}
+      onClose=${() => { setView(null); load(); }} />`}
     ${folderDlg}
   </div>`;
 }
@@ -246,7 +248,7 @@ const agreeText = (v) => (v == null ? '樣本太少，無法判斷'
   : v >= 0.4 ? '只有部分一致，建議依提醒重新評分'
   : '兩邊看法差很多，建議換一個地端評審模型，或加大決選張數');
 
-function Result({ r, i, names, pick, why, onOpen }) {
+function Result({ r, i, names, pick, why, onOpen, onEdit }) {
   const f = r.final;
   const scores = (f || r.teacher || r.local || {}).scores || {};
   const kind = f || r.teacher ? '' : 'local';
@@ -262,7 +264,9 @@ function Result({ r, i, names, pick, why, onOpen }) {
       </div>
       ${why && html`<p>${why}</p>`}
       ${f && html`<p class="small"><b>優點</b>　${f.strengths}</p><p class="small muted"><b>可能扣分</b>　${f.weaknesses}</p>
-        ${f.edit && f.edit !== '不需調整' ? html`<p class="small muted"><b>投稿前調整</b>　${f.edit}</p>` : ''}`}
+        ${f.edit && f.edit !== '不需調整' ? html`<p class="small muted"><b>後製方向</b>　${f.edit}</p>` : ''}`}
+      <div class="row gap-s"><button class="btn sm" onClick=${onEdit}><${Icon} name="edit" size=${13} /> ${r.edited ? '繼續後製' : '後製'}</button>
+        ${r.edited ? html`<span class="chip local">已修圖，匯出時會多一份修圖後的版本</span>` : f ? html`<span class="small faint">外部評審的調整建議已經準備好，開啟後按「套用」</span>` : ''}</div>
       ${!f && r.teacher && html`<p class="small">${r.teacher.comment}</p>`}
       ${!f && r.local && html`<p class="small muted">${r.local.reason}</p>`}
       <div style="max-width:420px"><${Bars} kind=${kind} rows=${Object.entries(scores).map(([k, v]) => [names[k] || k, v])} /></div>

@@ -11,11 +11,11 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import cloud, config, contest, export, grouping, local_vlm, pipeline, taxonomy
+from . import cloud, config, contest, editing, export, grouping, imaging, local_vlm, pipeline, retouch, taxonomy
 from .cloud import CloudError
 from .context import Ctx
 from .db import photo_dict
@@ -25,7 +25,8 @@ WEB = Path(__file__).parent / "web"
 
 LIST_COLS = (
     "p.id, p.filename, p.width, p.height, p.taken_at, p.category, p.aesthetic, p.tech, p.sharp, p.prefilter, "
-    "p.vlm_score, p.group_id, p.group_size, p.is_best, p.flags, p.rating, p.flag, p.caption, p.event_id, p.error"
+    "p.vlm_score, p.group_id, p.group_size, p.is_best, p.flags, p.rating, p.flag, p.caption, p.event_id, p.error, "
+    "(SELECT e.recipe IS NOT NULL FROM edits e WHERE e.photo_id=p.id) edited"
 )
 SORTS = {
     "time": "p.taken_ts ASC, p.id",
@@ -90,6 +91,15 @@ class ExportIn(BaseModel):
 
 class RenameIn(BaseModel):
     title: str
+
+
+class RecipeIn(BaseModel):
+    recipe: dict = {}
+
+
+class SuggestIn(BaseModel):
+    rounds: int = 1
+    contest_id: int | None = None
 
 
 def create_app(ctx: Ctx | None = None) -> FastAPI:
@@ -423,6 +433,63 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         except OSError:
             raise HTTPException(500, f"無法開啟檔案管理員。檔案位置：{path}")
         return {"ok": True}
+
+    # ---------------------------------------------------------------- editing
+
+    def _photo_or_404(pid: int) -> None:
+        if not ctx.db.one("SELECT 1 FROM photos WHERE id=? AND error IS NULL", (pid,)):
+            raise HTTPException(404, "找不到這張照片")
+
+    @app.get("/api/edit/{pid}")
+    def get_edit(pid: int):
+        _photo_or_404(pid)
+        d = retouch.load(ctx, pid)
+        try:
+            d["stats"] = retouch.photo_stats(ctx, pid, retouch.base_image(ctx, pid))
+        except OSError:
+            raise HTTPException(404, "原始檔已不在原本的位置，無法修圖")
+        return d
+
+    @app.put("/api/edit/{pid}")
+    def put_edit(pid: int, body: RecipeIn):
+        """Saves the edit as a recipe. The original file is not touched."""
+        _photo_or_404(pid)
+        return {"recipe": retouch.save_recipe(ctx, pid, body.recipe)}
+
+    @app.get("/api/edit/{pid}/render")
+    def render_edit(pid: int, r: str = "{}", px: int = 1024):
+        """Live preview of any recipe, saved or not."""
+        _photo_or_404(pid)
+        try:
+            recipe = json.loads(r)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "調整參數格式不正確")
+        try:
+            base = retouch.base_image(ctx, pid, 1600 if px > 1024 else 1024)
+        except OSError:
+            raise HTTPException(404, "原始檔已不在原本的位置")
+        out = editing.render(base, recipe if isinstance(recipe, dict) else {})
+        return Response(imaging.jpeg_bytes(out, 88), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/edit/{pid}/suggest")
+    def suggest_edit(pid: int, body: SuggestIn):
+        """On-device suggestion, with the model checking its own result. No tokens."""
+        _photo_or_404(pid)
+        return retouch.suggest_local(ctx, pid, max(0, min(body.rounds, 2)), body.contest_id)
+
+    @app.post("/api/edit/{pid}/review")
+    def review_edit(pid: int, body: RecipeIn):
+        """One external-model review of a before/after pair. Uploads one small composite image."""
+        _photo_or_404(pid)
+        if editing.is_identity(body.recipe):
+            raise HTTPException(400, "還沒有做任何調整。")
+        return retouch.review_cloud(ctx, pid, body.recipe)
+
+    @app.post("/api/edit/export")
+    def export_edits(body: ExportIn):
+        if not body.photo_ids:
+            raise HTTPException(400, "沒有選取照片")
+        return export.export_edited(ctx, body.photo_ids, body.dest)
 
     # ---------------------------------------------- events, categories, groups
 

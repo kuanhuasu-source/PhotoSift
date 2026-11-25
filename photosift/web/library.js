@@ -1,5 +1,6 @@
 import { html, useState, useEffect, useRef, useCallback, api, fail, toast, useApp, Icon, Dialog, Bars, usePickFolder,
   n0, fmtDate, FLAW, CATS, VLM_KEYS, thumb, qs } from './ui.js';
+import { Editor, useRendered } from './editor.js';
 
 const SORTS = [['time_desc', '拍攝時間（新到舊）'], ['time', '拍攝時間（舊到新）'], ['score', '分數（地端模型評過的在前）'], ['aesthetic', '美感初評'],
   ['tech', '技術品質'], ['rating', '我的星等']];
@@ -14,6 +15,7 @@ export function Tile({ p, onClick, showScore = true }) {
       ${p.flag === 'pick' && html`<span class="badge pick">挑選</span>`}
       ${p.flag === 'reject' && html`<span class="badge rej">淘汰</span>`}
       ${p.rating > 0 && html`<span class="badge" style="color:var(--accent)">${'★'.repeat(p.rating)}</span>`}
+      ${p.edited ? html`<span class="badge" title="這張照片有修圖">已修</span>` : ''}
       ${(p.flags || []).map((f) => html`<span class="badge flaw">${FLAW[f] || f}</span>`)}
       ${p.error && html`<span class="badge flaw">無法讀取</span>`}
       <span class="grow"></span>
@@ -166,13 +168,17 @@ function AnnotateDialog({ onClose }) {
   <//>`;
 }
 
-export function PhotoViewer({ ids, index, onClose, onPatch }) {
+export function PhotoViewer({ ids, index, onClose, onPatch, startMode = 'info', contestId = null }) {
   const [i, setI] = useState(index);
   const [p, setP] = useState(null);
+  const [mode, setMode] = useState(startMode); // info | edit
+  const [recipe, setRecipe] = useState(null);
+  const [original, setOriginal] = useState(false); // hold to compare with the untouched photo
   const id = ids[i];
+  const rendered = useRendered(id, recipe, mode === 'edit');
 
   const load = useCallback((pid) => api('/photos/' + pid).then(setP).catch(fail), []);
-  useEffect(() => { setP(null); load(id); }, [id]);
+  useEffect(() => { setP(null); setRecipe(null); load(id); }, [id]);
 
   const patch = async (body) => {
     try {
@@ -192,25 +198,33 @@ export function PhotoViewer({ ids, index, onClose, onPatch }) {
 
   useEffect(() => {
     const k = (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      const typing = e.target.tagName === 'TEXTAREA' || (e.target.tagName === 'INPUT' && e.target.type !== 'range' && e.target.type !== 'checkbox');
+      if (typing) return;
       if (e.key === 'Escape') onClose();
+      else if (e.key === ' ' && mode === 'edit') { e.preventDefault(); setOriginal(true); }
+      else if (e.target.type === 'range') return; // arrow keys belong to the slider that has focus
       else if (e.key === 'ArrowRight') setI((x) => Math.min(ids.length - 1, x + 1));
       else if (e.key === 'ArrowLeft') setI((x) => Math.max(0, x - 1));
       else if (!p) return;
+      else if (e.key === 'e' || e.key === 'E') setMode((m) => (m === 'edit' ? 'info' : 'edit'));
       else if (e.key === 'p' || e.key === 'P') setFlag('pick');
       else if (e.key === 'x' || e.key === 'X') setFlag('reject');
       else if (/^[0-5]$/.test(e.key)) patch({ rating: +e.key });
     };
+    const up = (e) => e.key === ' ' && setOriginal(false);
     window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [p, ids.length]);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', k); window.removeEventListener('keyup', up); };
+  }, [p, ids.length, mode]);
 
   const v = p && p.vlm;
   const exposure = p && [p.focal && `${Math.round(p.focal)}mm`, p.aperture && `f/${p.aperture}`, p.shutter, p.iso && `ISO ${p.iso}`].filter(Boolean).join('　');
   return html`<div class="overlay">
     <div class="viewer">
       <div class="stage" onClick=${(e) => e.target === e.currentTarget && onClose()}>
-        <img key=${id} src=${`/api/preview/${id}?px=1600`} alt="" />
+        <img key=${id} src=${mode === 'edit' && rendered && !original ? rendered : `/api/preview/${id}?px=1600`} alt="" />
+        ${mode === 'edit' && html`<button class="hold" onMouseDown=${() => setOriginal(true)} onMouseUp=${() => setOriginal(false)}
+          onMouseLeave=${() => setOriginal(false)}>${original ? '原圖' : '按住看原圖'}</button>`}
         ${i > 0 && html`<button class="arrow l" onClick=${() => setI(i - 1)}><${Icon} name="left" size=${22} /></button>`}
         ${i < ids.length - 1 && html`<button class="arrow r" onClick=${() => setI(i + 1)}><${Icon} name="right" size=${22} /></button>`}
       </div>
@@ -226,6 +240,13 @@ export function PhotoViewer({ ids, index, onClose, onPatch }) {
           <button class="btn sm danger ${p.flag === 'reject' ? 'on' : ''}" onClick=${() => setFlag('reject')}><${Icon} name="x" size=${13} /> 淘汰 <span class="kbd">X</span></button>
           <span class="stars">${[1, 2, 3, 4, 5].map((s) => html`<button class=${p.rating >= s ? 'on' : ''} onClick=${() => patch({ rating: p.rating === s ? 0 : s })}>★</button>`)}</span>
         </div>
+        <div class="seg">
+          <button class=${mode === 'info' ? 'on' : ''} onClick=${() => setMode('info')}>資訊</button>
+          <button class=${mode === 'edit' ? 'on' : ''} disabled=${!!p.error} onClick=${() => setMode('edit')}>後製 <span class="kbd">E</span></button>
+        </div>
+        ${mode === 'edit' && html`<${Editor} photo=${p} recipe=${recipe} setRecipe=${setRecipe} contestId=${contestId}
+          onSaved=${(pid, edited) => onPatch && onPatch(pid, { edited: edited ? 1 : 0 })} />`}
+        ${mode === 'info' && html`
 
         ${p.caption && html`<div><h3>地端模型的描述</h3><p>${p.caption}</p>
           ${p.tags && html`<div class="row wrap gap-s" style="margin-top:8px">${p.tags.map((t) => html`<span class="chip">${t}</span>`)}</div>`}</div>`}
@@ -268,7 +289,7 @@ export function PhotoViewer({ ids, index, onClose, onPatch }) {
           <button class="btn sm" style="margin-top:10px" onClick=${() => api('/reveal/' + p.id, { method: 'POST' }).catch(fail)}>
             <${Icon} name="folder" size=${13} /> 在檔案管理員中顯示</button>
         </div>
-        <p class="small faint">← → 切換照片　0–5 給星等　Esc 關閉</p>`}
+        <p class="small faint">← → 切換照片　0–5 給星等　Esc 關閉</p>`}`}
       </div>
     </div>
   </div>`;

@@ -65,6 +65,9 @@ def load_image(path: Path, max_side: int | None = None) -> tuple[Image.Image, tu
         orientation = im.getexif().get(0x0112, 1)
     except Exception:
         pass
+    # The colour profile travels with every copy we make, so a Display P3 phone photo
+    # looks the same in the app, in an edit and in the exported file.
+    icc = im.info.get("icc_profile")
     im = ImageOps.exif_transpose(im)
     if orientation in (5, 6, 7, 8) and not is_raw(path):
         full = (full[1], full[0])
@@ -74,6 +77,7 @@ def load_image(path: Path, max_side: int | None = None) -> tuple[Image.Image, tu
         im = im.convert("RGB")
     if max_side and max(im.size) > max_side:
         im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+    im.info = {"icc_profile": icc} if icc else {}
     return im, full
 
 
@@ -86,10 +90,26 @@ def resized(im: Image.Image, max_side: int) -> Image.Image:
 
 
 def jpeg_bytes(im: Image.Image, quality: int = 85) -> bytes:
-    """Re-encode without any metadata (no EXIF, no GPS)."""
+    """Re-encode with no EXIF at all (no time, camera or GPS). Only the colour profile is kept."""
     buf = io.BytesIO()
-    im.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True)
+    extra = {"icc_profile": im.info["icc_profile"]} if im.info.get("icc_profile") else {}
+    im.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True, **extra)
     return buf.getvalue()
+
+
+def original_exif(path: Path) -> bytes | None:
+    """The original's EXIF block for an exported edit, with orientation reset because pixels are now upright."""
+    if is_raw(Path(path)):
+        return None
+    try:
+        with Image.open(path) as im:
+            ex = im.getexif()
+            if not len(ex):
+                return None
+            ex[0x0112] = 1
+            return ex.tobytes()
+    except Exception:
+        return None
 
 
 # ----------------------------------------------------------------------- EXIF

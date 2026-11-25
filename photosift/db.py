@@ -92,6 +92,13 @@ CREATE TABLE IF NOT EXISTS contest_scores (
     PRIMARY KEY (contest_id, photo_id)
 );
 
+CREATE TABLE IF NOT EXISTS edits (
+    photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+    recipe TEXT,                -- json: the current edit, NULL when the photo is untouched
+    suggested TEXT,             -- json: the latest suggestion from each source, {"local": ..., "cloud": ...}
+    updated_at REAL
+);
+
 CREATE TABLE IF NOT EXISTS cloud_calls (
     id INTEGER PRIMARY KEY,
     ts REAL NOT NULL,

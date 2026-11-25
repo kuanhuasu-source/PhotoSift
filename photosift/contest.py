@@ -641,14 +641,20 @@ def finals(ctx: Ctx, cid: int, progress: Progress = lambda *a: None, cancelled: 
     if not ids:
         raise ValueError("還沒有入圍照片。請先完成地端評審。")
     prov = get_provider(ctx.settings)
+    from . import retouch  # imported here: retouch itself depends on this module
+
     extra = {k: {"type": "string"} for k in ("strengths", "weaknesses", "title", "edit")}
-    schema = _teacher_schema(rubric, extra)
+    # The finalists are already being uploaded, so asking for an edit here costs no extra image.
+    schema = _teacher_schema(rubric, {**extra, "adjust": retouch.ADJUST_SCHEMA})
     intro = (
         f"比賽主題：{b['theme'] or '一般攝影比賽'}\n比賽規則：{b['rules'] or '（無）'}\n\n"
         f"評分標準（每項 1～10 分）：\n{_criteria_text(rubric)}\n\n"
         "以下是通過初選的入圍照片，每張前面都有編號。請逐張評審：\n"
         "- 每一項標準的分數\n- strengths：最打動人的地方\n- weaknesses：最可能被評審扣分的地方\n"
-        "- title：適合投稿用的作品名稱（8 字以內）\n- edit：投稿前值得做的一項調整（裁切、調色、轉正等），不需要就寫「不需調整」\n"
+        "- title：適合投稿用的作品名稱（8 字以內）\n- edit：一句話說明投稿前的後製方向，不需要就寫「不需調整」\n"
+        "- adjust：把 edit 的方向寫成可以直接套用的調整。只能做整體調整、裁切和轉正，要符合比賽規則，"
+        "並且克制：不需要的項目給 0。\n"
+        f"{retouch.ADJUST_GUIDE}\n"
         "回傳的 id 必須是照片編號。"
     )
     ctx.db.run("UPDATE contest_scores SET final=NULL, final_total=NULL, final_rank=NULL WHERE contest_id=?", (cid,))
@@ -672,6 +678,10 @@ def finals(ctx: Ctx, cid: int, progress: Progress = lambda *a: None, cancelled: 
                 "UPDATE contest_scores SET final=?, final_total=? WHERE contest_id=? AND photo_id=?",
                 (json.dumps(rec, ensure_ascii=False), weighted_total(rubric, scores), cid, pid),
             )
+            try:
+                retouch.store_cloud_adjust(ctx, pid, ph.get("adjust"), rec["edit"], res.model)
+            except OSError:
+                pass  # original missing: the critique is still worth keeping
         done += len(batch)
         progress(done, total_steps, f"外部評審決選（{prov.name}）")
 
@@ -760,7 +770,8 @@ def state(ctx: Ctx, cid: int) -> dict:
 
 def results(ctx: Ctx, cid: int, limit: int = 300) -> list[dict]:
     rows = ctx.db.all(
-        "SELECT s.*, p.filename, p.path, p.caption, p.category, p.aesthetic, p.tech, p.event_id, p.width, p.height "
+        "SELECT s.*, p.filename, p.path, p.caption, p.category, p.aesthetic, p.tech, p.event_id, p.width, p.height, "
+        "(SELECT e.recipe IS NOT NULL FROM edits e WHERE e.photo_id=p.id) edited "
         "FROM contest_scores s JOIN photos p ON p.id=s.photo_id WHERE s.contest_id=? AND s.local_total IS NOT NULL "
         "ORDER BY (s.final_rank IS NULL), s.final_rank, COALESCE(s.calibrated, s.local_total) DESC, s.photo_id LIMIT ?",
         (cid, limit),
