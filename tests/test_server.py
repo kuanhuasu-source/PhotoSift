@@ -168,3 +168,37 @@ def test_settings_and_keys_never_echo_secrets(client, monkeypatch):
     assert client.get("/api/status").json()["cloud"]["label"] == "Claude"
     bad = dict(new, cloud={"provider": "nope"})
     assert client.put("/api/settings", json=bad).status_code == 400
+
+
+def test_annotate_regroup_and_export_endpoints(client, tmp_path):
+    analyse(client)
+    assert client.post("/api/annotate", json={"limit": 4}).status_code == 200
+    assert wait(client)["result"]["annotated"] == 4
+    assert client.get("/api/status").json()["annotated"] == 4
+    assert client.get("/api/photos", params={"annotated": 1, "sort": "score"}).json()["total"] == 4
+    # literal caption text is searchable even without a semantic match
+    assert client.get("/api/photos", params={"q": "測試文字"}).json()["total"] >= 4
+
+    assert client.post("/api/regroup").status_code == 200
+    j = wait(client)
+    assert j["status"] == "done" and j["result"]["photos"] == 13
+    assert client.get("/api/status").json()["annotated"] == 4  # regrouping keeps annotations
+
+    ids = [p["id"] for p in client.get("/api/photos", params={"limit": 3}).json()["items"]]
+    out = client.post("/api/export", json={"dest": str(tmp_path / "picked"), "photo_ids": ids}).json()
+    assert out["copied"] == 3 and len(list((tmp_path / "picked").iterdir())) == 3
+    # exporting twice never overwrites: the second copy gets a new name
+    client.post("/api/export", json={"dest": str(tmp_path / "picked"), "photo_ids": ids[:1]})
+    assert len(list((tmp_path / "picked").iterdir())) == 4
+    assert client.post("/api/export", json={"dest": str(tmp_path / "x"), "photo_ids": []}).status_code == 400
+
+
+def test_event_rename_and_models(client):
+    analyse(client)
+    ev = client.get("/api/events").json()[0]
+    assert client.patch(f"/api/events/{ev['id']}", json={"title": "  家族旅行  "}).status_code == 200
+    assert client.get("/api/events").json()[0]["title"] == "家族旅行"
+    assert client.patch(f"/api/events/{ev['id']}", json={"title": " "}).status_code == 400
+    local = client.get("/api/models/local").json()
+    assert local["ok"] and local["model"] == "fake-vlm" and set(local["recommended"]) == {"annotator", "judge"}
+    assert client.get("/api/models/cloud/nope").status_code == 404

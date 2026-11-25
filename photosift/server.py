@@ -413,12 +413,15 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         if r is None or not Path(r["path"]).exists():
             raise HTTPException(404, "原始檔已不在原本的位置")
         path = r["path"]
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", path])
-        elif sys.platform == "win32":
-            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-        else:
-            subprocess.Popen(["xdg-open", str(Path(path).parent)])
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+            elif sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(Path(path).parent)])
+        except OSError:
+            raise HTTPException(500, f"無法開啟檔案管理員。檔案位置：{path}")
         return {"ok": True}
 
     # ---------------------------------------------- events, categories, groups
