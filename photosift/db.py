@@ -1,0 +1,192 @@
+"""SQLite storage. One connection per thread, WAL so the UI can read while a job writes."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+
+import numpy as np
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS folders (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    added_at REAL NOT NULL,
+    last_scan REAL
+);
+
+CREATE TABLE IF NOT EXISTS photos (
+    id INTEGER PRIMARY KEY,
+    folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    path TEXT NOT NULL UNIQUE,
+    raw_path TEXT,
+    filename TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mtime REAL NOT NULL,
+    width INTEGER, height INTEGER,
+    taken_at TEXT,              -- naive local ISO time
+    taken_ts REAL,              -- seconds, for ordering and gaps
+    time_source TEXT,           -- exif | mtime
+    lat REAL, lon REAL,
+    camera TEXT, lens TEXT,
+    focal REAL, aperture REAL, shutter TEXT, iso INTEGER,
+    -- technical quality (0-100)
+    sharp REAL, exposure REAL, contrast REAL, colorful REAL, tech REAL,
+    flags TEXT NOT NULL DEFAULT '[]',
+    -- embedding-derived
+    aesthetic_raw REAL, aesthetic REAL,
+    category TEXT, category_top TEXT,
+    group_id INTEGER, group_size INTEGER NOT NULL DEFAULT 1, is_best INTEGER NOT NULL DEFAULT 1,
+    event_id INTEGER,
+    prefilter REAL,             -- combined local score used to order the funnel
+    -- local VLM annotation
+    caption TEXT, tags TEXT, vlm TEXT, vlm_model TEXT, vlm_score REAL,
+    -- user decisions (never touch the files)
+    rating INTEGER NOT NULL DEFAULT 0,
+    flag TEXT,                  -- pick | reject
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS photos_ts ON photos(taken_ts);
+CREATE INDEX IF NOT EXISTS photos_event ON photos(event_id);
+CREATE INDEX IF NOT EXISTS photos_group ON photos(group_id);
+CREATE INDEX IF NOT EXISTS photos_category ON photos(category);
+CREATE INDEX IF NOT EXISTS photos_folder ON photos(folder_id);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    vec BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    user_title INTEGER NOT NULL DEFAULT 0,
+    start_ts REAL, end_ts REAL,
+    place TEXT,
+    cover_id INTEGER,
+    count INTEGER NOT NULL DEFAULT 0,
+    sig TEXT                    -- stable signature so renames survive re-analysis
+);
+
+CREATE TABLE IF NOT EXISTS contests (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    brief TEXT NOT NULL,        -- json: theme, rules, values, scope, sizes
+    rubric TEXT,                -- json from the coach
+    calibration TEXT,           -- json: weights, agreement, notes
+    summary TEXT                -- json: final jury verdict
+);
+
+CREATE TABLE IF NOT EXISTS contest_scores (
+    contest_id INTEGER NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
+    photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+    local TEXT, local_total REAL,           -- on-device judge
+    teacher TEXT, teacher_total REAL,       -- cloud score on the calibration sample
+    calibrated REAL,                        -- local score mapped onto the teacher's scale
+    final TEXT, final_total REAL, final_rank INTEGER,
+    PRIMARY KEY (contest_id, photo_id)
+);
+
+CREATE TABLE IF NOT EXISTS cloud_calls (
+    id INTEGER PRIMARY KEY,
+    ts REAL NOT NULL,
+    provider TEXT NOT NULL, model TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    contest_id INTEGER,
+    images INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    seconds REAL NOT NULL DEFAULT 0
+);
+"""
+
+
+class DB:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()
+        self.conn.executescript(SCHEMA)
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=NORMAL")
+            c.execute("PRAGMA foreign_keys=ON")
+            self._local.conn = c
+        return c
+
+    @contextmanager
+    def tx(self):
+        c = self.conn
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            yield c
+        except BaseException:
+            c.execute("ROLLBACK")
+            raise
+        else:
+            c.execute("COMMIT")
+
+    def all(self, sql: str, params=()) -> list[sqlite3.Row]:
+        return self.conn.execute(sql, params).fetchall()
+
+    def one(self, sql: str, params=()) -> sqlite3.Row | None:
+        return self.conn.execute(sql, params).fetchone()
+
+    def val(self, sql: str, params=()):
+        r = self.conn.execute(sql, params).fetchone()
+        return r[0] if r else None
+
+    def run(self, sql: str, params=()) -> sqlite3.Cursor:
+        return self.conn.execute(sql, params)
+
+    def many(self, sql: str, rows) -> None:
+        with self.tx() as c:
+            c.executemany(sql, rows)
+
+    # ------------------------------------------------------------ embeddings
+
+    def put_embeddings(self, model: str, items: list[tuple[int, np.ndarray]]) -> None:
+        self.many(
+            "INSERT OR REPLACE INTO embeddings(photo_id, model, vec) VALUES (?,?,?)",
+            [(pid, model, np.asarray(v, dtype=np.float16).tobytes()) for pid, v in items],
+        )
+
+    def load_embeddings(self, model: str, ids: list[int] | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Returns (ids, matrix) for every stored vector of `model`, L2-normalised."""
+        rows = self.all("SELECT photo_id, vec FROM embeddings WHERE model=? ORDER BY photo_id", (model,))
+        if ids is not None:
+            want = set(ids)
+            rows = [r for r in rows if r["photo_id"] in want]
+        if not rows:
+            return np.zeros(0, dtype=np.int64), np.zeros((0, 0), dtype=np.float32)
+        out_ids = np.array([r["photo_id"] for r in rows], dtype=np.int64)
+        mat = np.stack([np.frombuffer(r["vec"], dtype=np.float16) for r in rows]).astype(np.float32)
+        mat /= np.linalg.norm(mat, axis=1, keepdims=True) + 1e-9
+        return out_ids, mat
+
+
+JSON_COLS = {"flags", "tags", "vlm", "category_top"}
+
+
+def photo_dict(row: sqlite3.Row, full: bool = False) -> dict:
+    d = dict(row)
+    for k in JSON_COLS & d.keys():
+        if d[k]:
+            try:
+                d[k] = json.loads(d[k])
+            except Exception:
+                d[k] = None
+    if not full:
+        d.pop("vlm", None)
+    return d
