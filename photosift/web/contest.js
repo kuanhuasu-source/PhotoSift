@@ -153,7 +153,7 @@ function Contest({ id, onEdit, onDeleted }) {
     try { await api('/contests/' + id, { method: 'DELETE' }); onDeleted(); } catch (e) { fail(e); }
   };
 
-  const needKey = !cloud.has_key && html`<div class="note">還沒有設定 ${cloud.label} 的 API key，外部模型的步驟無法執行。
+  const needKey = !cloud.has_key && html`<div class="note">${cloud.via === 'cli' ? `找不到 ${cloud.label} 的命令列工具` : `還沒有設定 ${cloud.label} 的 API key`}，外部模型的步驟無法執行。
     <a onClick=${() => go('settings')}>前往設定</a>。不設定也可以只用地端模型完成初選。</div>`;
   const shown = showAll ? results : results.slice(0, Math.max(c.scored_final || 0, 12));
   const picks = new Set(c.summary ? c.summary.picks : []);
@@ -278,7 +278,7 @@ function ConfirmUpload({ c, onClose, onGo }) {
   const what = c.step === 'calibrate' ? '校準' : '決選';
   return html`<${Dialog} wide title=${`送出 ${c.photo_ids.length} 張照片給 ${c.provider} ${what}`}
     sub=${`模型：${c.model || '（尚未選擇）'}`} onClose=${onClose}
-    footer=${html`<span class="small muted grow">預估約 ${n0(c.est_tokens)} tokens</span>
+    footer=${html`<span class="small muted grow">預估約 ${n0(c.est_tokens)} tokens${c.via === 'cli' ? '，透過命令列工具送出，計入訂閱用量（工具本身還會多用一些）' : ''}</span>
       <button class="btn" onClick=${onClose}>取消</button>
       <button class="btn primary" disabled=${!c.photo_ids.length} onClick=${onGo}><${Icon} name="cloud" size=${14} /> 送出這 ${c.photo_ids.length} 張</button>`}>
     <p class="muted">只有下面這些照片會離開這台電腦。上傳的是縮小到長邊 ${c.image_px}px 的複本，已移除拍攝時間、相機與 GPS 等資訊；原始檔不會上傳。</p>

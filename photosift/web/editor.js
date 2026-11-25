@@ -95,7 +95,8 @@ export function Editor({ photo, recipe, setRecipe, contestId, onSaved }) {
     setBusy('');
   };
   const askCloud = async () => {
-    if (!window.confirm(`把這張照片修圖前後的對照縮圖送給 ${cloud.label} 複查？大約會用 1,500～3,000 tokens。`)) return;
+    const cost = cloud.via === 'cli' ? '會透過命令列工具送出，計入訂閱用量，大約需要一分鐘。' : '大約會用 1,500～3,000 tokens。';
+    if (!window.confirm(`把這張照片修圖前後的對照縮圖送給 ${cloud.label} 複查？${cost}`)) return;
     setBusy('cloud');
     try {
       const r = await api(`/edit/${photo.id}/review`, { body: { recipe } });
@@ -169,7 +170,7 @@ export function Editor({ photo, recipe, setRecipe, contestId, onSaved }) {
     </div>
     <div class="row wrap gap-s">
       <button class="btn sm" disabled=${!!busy || !cloud.has_key || !Object.keys(recipe).length} onClick=${askCloud}
-        title=${cloud.has_key ? '' : '尚未設定外部模型的 API key'}>
+        title=${cloud.has_key ? '' : '外部模型尚未設定'}>
         ${busy === 'cloud' ? html`<span class="spin"></span>` : html`<${Icon} name="cloud" size=${13} />`} 請 ${cloud.label || '外部模型'} 複查</button>
       <span class="small faint">會上傳一張前後對照的縮圖</span>
     </div>

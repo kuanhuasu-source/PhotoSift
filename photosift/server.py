@@ -154,6 +154,7 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             "SUM(prefilter IS NOT NULL) analysed FROM photos"
         )
         prov = ctx.settings.cloud.provider
+        cli = cloud.via_cli(ctx.settings, prov)
         return {
             "photos": c["n"] or 0, "unreadable": c["bad"] or 0, "analysed": c["analysed"] or 0,
             "annotated": c["annotated"] or 0, "duplicates": c["dup"] or 0, "flawed": c["flawed"] or 0,
@@ -163,13 +164,19 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             "folders": db.val("SELECT COUNT(*) FROM folders") or 0,
             "job": jobs.snapshot(),
             "local": local_status(),
-            "cloud": {"provider": prov, "label": cloud.LABELS[prov], "model": ctx.settings.cloud.models.get(prov, ""),
+            "cloud": {"provider": prov, "label": cloud.LABELS[prov], "via": "cli" if cli else "api",
+                      "model": (ctx.settings.cloud.cli_models if cli else ctx.settings.cloud.models).get(prov, ""),
                       "has_key": _has_key(prov)},
             "native_dialog": app.state.window is not None,
             "home": str(ctx.home),
         }  # fmt: skip
 
     def _has_key(provider: str) -> bool:
+        """Whether the chosen way of reaching this provider is set up: a key, or the command-line tool."""
+        if cloud.via_cli(ctx.settings, provider):
+            from .cloud.cli import find_cli
+
+            return find_cli(provider, ctx.settings.cloud.cli_paths.get(provider, "")) is not None
         if config.get_api_key(provider):
             return True
         # Claude can also sign in through an `ant auth login` profile, which the SDK finds itself.
@@ -626,8 +633,10 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             raise HTTPException(404)
         est = len(ids) * (c["image_tokens"] + 250) + extra
         prov = ctx.settings.cloud.provider
-        return {"photo_ids": ids, "est_tokens": est, "image_px": ctx.settings.cloud.image_px,
-                "provider": cloud.LABELS[prov], "model": ctx.settings.cloud.models.get(prov, "")}  # fmt: skip
+        cli = cloud.via_cli(ctx.settings, prov)
+        model = (ctx.settings.cloud.cli_models if cli else ctx.settings.cloud.models).get(prov, "")
+        return {"photo_ids": ids, "est_tokens": est, "image_px": ctx.settings.cloud.image_px, "via": "cli" if cli else "api",
+                "provider": cloud.LABELS[prov], "model": model or ("工具的預設模型" if cli else "")}  # fmt: skip
 
     @app.post("/api/contests/{cid}/calibrate")
     def contest_calibrate(cid: int):
@@ -703,6 +712,37 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         if provider not in cloud.PROVIDERS:
             raise HTTPException(404)
         return {"models": cloud.get_provider(ctx.settings, provider).list_models()}
+
+    @app.get("/api/cli/{provider}")
+    def cli_info(provider: str):
+        """Is the vendor's command-line tool installed and signed in?"""
+        if provider not in cloud.CLI_CAPABLE:
+            raise HTTPException(404)
+        from .cloud.cli import cli_status
+
+        return cli_status(provider, ctx.settings.cloud.cli_paths.get(provider, ""))
+
+    @app.post("/api/cloud/test")
+    def cloud_test():
+        """One tiny real request (text plus a small generated picture) through the current provider."""
+        from PIL import Image as _Image
+
+        prov = cloud.get_provider(ctx.settings)
+        swatch = _Image.new("RGB", (96, 96), (200, 40, 40))
+        schema = {
+            "type": "object",
+            "properties": {"colour": {"type": "string"}, "ok": {"type": "boolean"}},
+            "required": ["colour", "ok"],
+            "additionalProperties": False,
+        }
+        res = prov.generate(
+            system="你是測試助手，只輸出 JSON。",
+            parts=["這是一張純色的測試圖片：", cloud.Img(imaging.jpeg_bytes(swatch)), "請在 colour 用繁體中文寫出它的顏色，ok 填 true。"],
+            schema=schema, max_tokens=2000,
+        )  # fmt: skip
+        contest.log_call(ctx, res, prov.name, "test", None)
+        return {"ok": True, "answer": res.data, "model": res.model, "seconds": round(res.seconds, 1),
+                "tokens": res.input_tokens + res.output_tokens}  # fmt: skip
 
     @app.get("/api/usage")
     def usage():

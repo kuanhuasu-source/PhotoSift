@@ -98,7 +98,7 @@ function App() {
         <div class="dotline" title=${local.error || ''}>
           <i class="dot ${local.ok ? 'ok' : 'bad'}"></i><span class="ellipsis">地端 ${local.ok ? local.model : '未就緒'}</span></div>
         <div class="dotline">
-          <i class="dot ${cloud.has_key ? 'ok' : 'warn'}"></i><span class="ellipsis">外部 ${cloud.label || ''}${cloud.has_key ? '' : '（未設定）'}</span></div>
+          <i class="dot ${cloud.has_key ? 'ok' : 'warn'}"></i><span class="ellipsis">外部 ${cloud.label || ''}${cloud.has_key ? (cloud.via === 'cli' ? '（訂閱）' : '') : '（未設定）'}</span></div>
       </aside>
       <main>
         ${route.view === 'library' && html`<${Library} filters=${libFilters} setFilters=${setLibFilters} />`}

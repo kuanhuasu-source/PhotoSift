@@ -52,8 +52,20 @@ class Provider:
         raise NotImplementedError
 
 
+CLI_CAPABLE = ("claude", "openai")
+
+
+def via_cli(s: config.Settings, name: str) -> bool:
+    return name in CLI_CAPABLE and s.cloud.access.get(name) == "cli"
+
+
 def get_provider(s: config.Settings, name: str | None = None) -> Provider:
     name = name or s.cloud.provider
+    if via_cli(s, name):
+        from .cli import ClaudeCLIProvider, CodexCLIProvider
+
+        cls = ClaudeCLIProvider if name == "claude" else CodexCLIProvider
+        return cls(s.cloud.cli_models.get(name, ""), s.cloud.cli_paths.get(name, ""))
     model = s.cloud.models.get(name, "")
     key = config.get_api_key(name)
     if name == "claude":

@@ -57,6 +57,11 @@ class CloudSettings(BaseModel):
         }
     )
     openai_base_url: str = "https://api.openai.com/v1"
+    # How each provider is reached: "api" (an API key) or "cli" (the vendor's command-line tool,
+    # signed in with a subscription). Experimental, and only for Claude and GPT.
+    access: dict[str, str] = Field(default_factory=lambda: {"claude": "api", "openai": "api", "gemini": "api"})
+    cli_models: dict[str, str] = Field(default_factory=lambda: {"claude": "", "openai": ""})  # empty: the tool's default
+    cli_paths: dict[str, str] = Field(default_factory=lambda: {"claude": "", "openai": ""})  # empty: find it automatically
     image_px: int = 1024
     # Optional prices (USD per million tokens) used only to show a cost estimate.
     price_in: float = 0.0

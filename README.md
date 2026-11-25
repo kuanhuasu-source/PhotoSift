@@ -114,6 +114,27 @@ API key 存在 macOS 的鑰匙圈。也可以用環境變數 `ANTHROPIC_API_KEY`
 
 「設定」最下方有每個模型的呼叫次數與 token 用量。填入你所用模型的單價，會一併顯示估計費用。
 
+### 用訂閱而不是 API key（實驗性）
+
+Claude 和 GPT 可以改走官方的命令列工具，用你已經登入的訂閱帳號，不需要 API key。在「設定」的外部模型選 Claude 或 GPT，把上方的切換鈕從「API key」改成訂閱。
+
+| | 需要先安裝並登入 | 登入方式 |
+|---|---|---|
+| Claude 訂閱 | [Claude Code](https://code.claude.com) | 在終端機執行 `claude`，輸入 `/login` |
+| ChatGPT 訂閱 | [Codex CLI](https://developers.openai.com/codex/cli) | 在終端機執行 `codex login`，選擇用 ChatGPT 帳號登入 |
+
+運作方式：PhotoSift 在背景執行該工具的非互動模式（`claude -p` 或 `codex exec`），把縮小後、已移除拍攝資訊的照片放在暫存資料夾交給它，讀回它輸出的 JSON，然後刪除暫存檔。Claude Code 只被允許使用讀檔工具，Codex 以唯讀沙箱執行。
+
+設定好之後請按「測試連線」，它會送一張純色的小圖確認整條路是通的。
+
+要知道的幾件事：
+
+- **比 API 慢**。工具每次啟動都有固定開銷，每批照片大約一到兩分鐘。
+- **用量計入訂閱額度**，而且工具本身的系統提示會多用一些。
+- **Claude 的使用政策**：Anthropic 的文件說明訂閱登入是給訂閱者本人使用，開發產品應該用 API key，同時也說這不妨礙使用者用自己的訂閱登入未修改的 Claude Code。個人在自己電腦上用腳本呼叫官方工具沒有被明文涵蓋，政策若有變動請以官方說明為準。
+- 環境裡如果設了 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，PhotoSift 在執行工具時會把它們拿掉，確保走的是訂閱登入而不是按量計費。
+- **Gemini 沒有這個選項**。查到的資料顯示個人訂閱目前不能用於 Gemini CLI，所以 Gemini 仍然只能用 API key。
+
 ## 地端模型
 
 預設連到 `http://localhost:11434` 的 Ollama。也可以在設定的「進階」改成 LM Studio 或其他 OpenAI 相容的本機服務。
@@ -132,7 +153,7 @@ API key 存在 macOS 的鑰匙圈。也可以用環境變數 `ANTHROPIC_API_KEY`
 
 已實測：
 
-- 49 個自動化測試（`uv run pytest`），涵蓋匯入、品質判定、分組、事件切分、比賽流程、修圖引擎、後製建議、API，以及「原始檔不被更動」「金鑰不外洩」「上傳的複本不含拍攝資訊」等保證。
+- 57 個自動化測試（`uv run pytest`），涵蓋匯入、品質判定、分組、事件切分、比賽流程、修圖引擎、後製建議、API，以及「原始檔不被更動」「金鑰不外洩」「上傳的複本不含拍攝資訊」等保證。
 - 用真的 SigLIP 2 模型跑過影像分析與中文搜尋。
 - 用 Gemini 跑過完整的比賽流程（評分標準、校準、決選與後製建議）和修圖複查。
 - 用瀏覽器從介面操作過完整流程，包含修圖、套用建議與匯出，沒有錯誤。
@@ -144,6 +165,7 @@ API key 存在 macOS 的鑰匙圈。也可以用環境變數 `ANTHROPIC_API_KEY`
 - **Apple GPU（MPS）加速**、**HEIC 與 RAW 檔**的實際讀取與修圖。
 - **iPhone 照片的色彩**。iPhone 照片使用 Display P3 色域，程式會把色彩描述檔一路帶到預覽和匯出檔，但手邊沒有真正的 P3 照片可以驗證顏色是否完全一致。
 - **Claude 與 GPT**。開發環境沒有這兩家的金鑰，程式是依官方文件寫的，沒有對真實 API 呼叫過。
+- **訂閱（命令列工具）這條路**。參數是對照實際安裝的 Claude Code 2.1 和 Codex CLI 0.172 的說明寫的，但開發環境沒有可用的訂閱登入，所以只用模擬的工具測過流程。特別是「Claude Code 用讀檔工具看照片」這一步，請先用「測試連線」確認。
 - 清晰度的判定門檻是用網路尺寸的範例照片調的，實際相機檔可能需要在設定裡調整「模糊判定門檻」。
 - 後製建議的幅度是用少量範例照片調的。如果覺得模型普遍修得太多或太少，告訴我方向，可以再調。
 
@@ -171,7 +193,7 @@ photosift/
   taxonomy.py    主題分類與美感初評
   grouping.py    連拍分組、事件、初步分數
   local_vlm.py   地端視覺語言模型
-  cloud/         Claude、GPT、Gemini
+  cloud/         Claude、GPT、Gemini（API），以及透過官方命令列工具使用訂閱
   contest.py     比賽選片的四個步驟
   editing.py     修圖引擎：把一組調整套用到複本上
   retouch.py     後製建議：模型給方向、量測定幅度、複查修正

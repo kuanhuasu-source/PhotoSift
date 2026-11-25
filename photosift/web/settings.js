@@ -124,47 +124,100 @@ function LocalCard({ s, local, upd, reload }) {
   </div>`;
 }
 
+const CLI = {
+  claude: { tool: 'Claude Code', cmd: 'claude', plan: 'Claude 訂閱', models: 'opus、sonnet、fable',
+    login: '在終端機執行 claude，輸入 /login 用訂閱帳號登入' },
+  openai: { tool: 'Codex CLI', cmd: 'codex', plan: 'ChatGPT 訂閱', models: '',
+    login: '在終端機執行 codex login，選擇用 ChatGPT 帳號登入' },
+};
+
 function CloudCard({ s, keys, providers, upd, reload }) {
+  const { refresh } = useApp();
   const [key, setKey] = useState('');
   const [models, setModels] = useState({});
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState('');
+  const [cli, setCli] = useState(null);
   const p = s.provider;
+  const access = (s.access || {})[p] || 'api';
+  const viaCli = access === 'cli' && !!CLI[p];
   const src = keys[p];
   const srcText = { env: '來自環境變數', keychain: '存在系統鑰匙圈', file: '存在本機設定檔' };
+
+  const checkCli = () => { setCli(null); api('/cli/' + p).then(setCli).catch(() => setCli({ found: null, detail: '無法檢查。' })); };
+  useEffect(() => { if (viaCli) checkCli(); }, [p, viaCli, (s.cli_paths || {})[p]]);
+
   const saveKey = async (value) => {
     try {
       await api('/keys', { body: { provider: p, key: value } });
-      setKey(''); reload(); toast(value ? 'API key 已儲存。' : 'API key 已移除。');
+      setKey(''); reload(); refresh(); toast(value ? 'API key 已儲存。' : 'API key 已移除。');
     } catch (e) { fail(e); }
   };
   const list = async () => {
-    setBusy(true);
+    setBusy('list');
     try { const d = await api('/models/cloud/' + p); setModels({ ...models, [p]: d.models }); toast(`找到 ${d.models.length} 個可用模型。`); } catch (e) { fail(e); }
-    setBusy(false);
+    setBusy('');
+  };
+  const test = async () => {
+    setBusy('test');
+    try {
+      const r = await api('/cloud/test', { method: 'POST' });
+      toast(`連線成功：${r.model} 看到一張「${r.answer.colour}」的測試圖，花了 ${r.seconds} 秒、${n0(r.tokens)} tokens。`);
+    } catch (e) { fail(e); }
+    setBusy('');
   };
   const setModel = (v) => upd('cloud', { models: { ...s.models, [p]: v } });
+  const sizeField = html`<div class="field" style="width:180px"><span>上傳的圖片長邊（px）</span>
+    <select value=${s.image_px} onChange=${(e) => upd('cloud', { image_px: +e.target.value })}>
+      <option value="768">768（最省）</option><option value="1024">1024（建議）</option><option value="1568">1568（最細緻）</option></select></div>`;
+
   return html`<div class="card stack">
-    <div><h2>外部模型 <span class="chip cloud">需要 API key，會花 token</span></h2>
-      <div class="sub">只在比賽選片時使用：設計評分標準、校準地端評審、為入圍照片寫評語並排名。每次送出照片之前都會先讓你看過。</div></div>
+    <div><h2>外部模型 <span class="chip cloud">${viaCli ? '使用訂閱，計入訂閱用量' : '需要 API key，會花 token'}</span></h2>
+      <div class="sub">只在比賽選片與修圖複查時使用：設計評分標準、校準地端評審、為入圍照片寫評語並排名。每次送出照片之前都會先讓你看過。</div></div>
     <div class="row wrap gap-s">${Object.entries(providers).map(([k, label]) => html`
-      <span class="chip pick ${p === k ? 'on' : ''}" onClick=${() => upd('cloud', { provider: k })}>${label}${keys[k] ? ' ✓' : ''}</span>`)}</div>
-    <div class="row wrap top">
-      <div class="field" style="width:300px"><span>${providers[p]} 模型</span>
-        <input type="text" class="mono" list="cloud-models" value=${s.models[p] || ''} placeholder="按右邊的按鈕列出可用模型"
-          onChange=${(e) => setModel(e.target.value.trim())} />
-        <datalist id="cloud-models">${(models[p] || []).map((m) => html`<option value=${m} />`)}</datalist></div>
-      <button class="btn" style="margin-top:23px" disabled=${busy} onClick=${list}>${busy ? html`<span class="spin"></span>` : ''} 列出可用模型</button>
-      <div class="field" style="width:180px"><span>上傳的圖片長邊（px）</span>
-        <select value=${s.image_px} onChange=${(e) => upd('cloud', { image_px: +e.target.value })}>
-          <option value="768">768（最省）</option><option value="1024">1024（建議）</option><option value="1568">1568（最細緻）</option></select></div>
-    </div>
-    <div class="row wrap top">
-      <div class="field" style="width:420px"><span>${providers[p]} API key　${src ? html`<span class="chip local">已設定，${srcText[src]}</span>` : html`<span class="chip bad">尚未設定</span>`}</span>
-        <input type="password" autocomplete="off" value=${key} onInput=${(e) => setKey(e.target.value)} placeholder=${src ? '輸入新的 key 可以取代目前的' : '貼上 API key'} /></div>
-      <button class="btn primary" style="margin-top:23px" disabled=${!key.trim()} onClick=${() => saveKey(key)}>儲存</button>
-      ${src && src !== 'env' && html`<button class="btn danger" style="margin-top:23px" onClick=${() => saveKey('')}>移除</button>`}
-    </div>
-    <p class="small muted">API key 會存進系統鑰匙圈（系統沒有鑰匙圈時，存成只有你能讀取的本機檔案），不會寫進程式的資料夾。${p === 'claude' ? '已經用 ant auth login 登入的話，可以不用填。' : ''}${p === 'openai' && !s.models.openai ? 'GPT 的模型名稱更新得很快，請先儲存 key 再按「列出可用模型」挑選。' : ''}</p>
+      <span class="chip pick ${p === k ? 'on' : ''}" onClick=${() => upd('cloud', { provider: k })}>${label}${keys[k] || (s.access || {})[k] === 'cli' ? ' ✓' : ''}</span>`)}</div>
+
+    ${CLI[p] && html`<div class="seg" style="max-width:520px">
+      <button class=${!viaCli ? 'on' : ''} onClick=${() => upd('cloud', { access: { ...s.access, [p]: 'api' } })}>API key</button>
+      <button class=${viaCli ? 'on' : ''} onClick=${() => upd('cloud', { access: { ...s.access, [p]: 'cli' } })}>${CLI[p].plan}（實驗性）</button>
+    </div>`}
+
+    ${viaCli ? html`
+      <div class="note ${cli && cli.found && cli.logged_in !== false ? 'local' : 'bad'}">
+        ${!cli ? html`<span class="spin"></span> 檢查 ${CLI[p].cmd} 指令…`
+          : !cli.found ? html`找不到 <code>${CLI[p].cmd}</code> 指令。請先安裝 ${CLI[p].tool}，然後${CLI[p].login}。裝在不常見的位置時，可以在下方填入完整路徑。`
+          : cli.logged_in === false ? html`找到了 <span class="mono">${cli.found}</span>，但還沒登入。請${CLI[p].login}。`
+          : html`找到 <span class="mono">${cli.found}</span>　${cli.detail}`}
+        　<a onClick=${checkCli}>重新檢查</a></div>
+      <div class="row wrap top">
+        <div class="field" style="width:260px"><span>模型（留空使用工具的預設）</span>
+          <input type="text" class="mono" value=${(s.cli_models || {})[p] || ''} placeholder=${CLI[p].models ? `例如 ${CLI[p].models}` : '留空即可'}
+            onChange=${(e) => upd('cloud', { cli_models: { ...s.cli_models, [p]: e.target.value.trim() } })} /></div>
+        ${sizeField}
+        <div class="field" style="width:300px"><span>${CLI[p].cmd} 的完整路徑（找不到時才需要填）</span>
+          <input type="text" class="mono" value=${(s.cli_paths || {})[p] || ''} placeholder="自動尋找"
+            onChange=${(e) => upd('cloud', { cli_paths: { ...s.cli_paths, [p]: e.target.value.trim() } }).then(refresh)} /></div>
+      </div>
+      <p class="small muted">PhotoSift 會在背景執行你已經登入的 ${CLI[p].tool}，把縮小後的照片放在暫存資料夾交給它，完成後刪除。不需要 API key，用量計入你的訂閱額度。這條路比 API 慢，每批照片大約要一到兩分鐘。
+        ${p === 'claude' ? 'Anthropic 的文件說明訂閱登入是給訂閱者本人使用，開發產品應該用 API key；個人在自己電腦上這樣使用沒有被明文涵蓋，政策若有變動請以官方說明為準。' : ''}</p>
+    ` : html`
+      <div class="row wrap top">
+        <div class="field" style="width:300px"><span>${providers[p]} 模型</span>
+          <input type="text" class="mono" list="cloud-models" value=${s.models[p] || ''} placeholder="按右邊的按鈕列出可用模型"
+            onChange=${(e) => setModel(e.target.value.trim())} />
+          <datalist id="cloud-models">${(models[p] || []).map((m) => html`<option value=${m} />`)}</datalist></div>
+        <button class="btn" style="margin-top:23px" disabled=${!!busy} onClick=${list}>${busy === 'list' ? html`<span class="spin"></span>` : ''} 列出可用模型</button>
+        ${sizeField}
+      </div>
+      <div class="row wrap top">
+        <div class="field" style="width:420px"><span>${providers[p]} API key　${src ? html`<span class="chip local">已設定，${srcText[src]}</span>` : html`<span class="chip bad">尚未設定</span>`}</span>
+          <input type="password" autocomplete="off" value=${key} onInput=${(e) => setKey(e.target.value)} placeholder=${src ? '輸入新的 key 可以取代目前的' : '貼上 API key'} /></div>
+        <button class="btn primary" style="margin-top:23px" disabled=${!key.trim()} onClick=${() => saveKey(key)}>儲存</button>
+        ${src && src !== 'env' && html`<button class="btn danger" style="margin-top:23px" onClick=${() => saveKey('')}>移除</button>`}
+      </div>
+      <p class="small muted">API key 會存進系統鑰匙圈（系統沒有鑰匙圈時，存成只有你能讀取的本機檔案），不會寫進程式的資料夾。${p === 'claude' ? '已經用 ant auth login 登入的話，可以不用填。' : ''}${p === 'openai' && !s.models.openai ? 'GPT 的模型名稱更新得很快，請先儲存 key 再按「列出可用模型」挑選。' : ''}</p>
+    `}
+    <div class="row"><button class="btn" disabled=${!!busy} onClick=${test}>${busy === 'test' ? html`<span class="spin"></span>` : html`<${Icon} name="cloud" size=${14} />`} 測試連線</button>
+      <span class="small muted">送出一張純色的小測試圖，確認${viaCli ? '命令列工具' : '金鑰和模型'}可以正常使用。${busy === 'test' && viaCli ? '命令列工具啟動比較慢，請稍候。' : ''}</span></div>
   </div>`;
 }
 

@@ -258,7 +258,7 @@ tr:last-child td { border-bottom: 0; }
 
 /* ------------------------------------------------------------- editor */
 .seg { display: flex; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
-.seg button { flex: 1; height: 28px; border: 0; background: none; border-radius: 6px; color: var(--muted); cursor: pointer; }
+.seg button { flex: 1; height: 28px; white-space: nowrap; padding: 0 12px; border: 0; background: none; border-radius: 6px; color: var(--muted); cursor: pointer; }
 .seg button.on { background: var(--panel-3); color: var(--text); }
 .seg button:disabled { opacity: .4; cursor: default; }
 .editor { display: flex; flex-direction: column; gap: 14px; }
