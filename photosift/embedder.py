@@ -23,6 +23,10 @@ class Embedder:
     def images(self, ims: list[Image.Image]) -> np.ndarray: ...
     def texts(self, texts: list[str]) -> np.ndarray: ...
 
+    def match_prob(self, sims: np.ndarray) -> np.ndarray | None:
+        """Probability that image and text really match, when the model is trained to give one."""
+        return None
+
 
 class OpenClipEmbedder(Embedder):
     def __init__(self, model: str, device: str = "auto"):
@@ -43,6 +47,15 @@ class OpenClipEmbedder(Embedder):
         self.model.eval().to(device)
         self.tokenizer = open_clip.get_tokenizer(model)
         self.dim = int(self.texts(["x"]).shape[1])
+        # SigLIP models are trained with a sigmoid loss, so scale and bias turn a cosine into a probability.
+        bias = getattr(self.model, "logit_bias", None)
+        self._calib = (float(self.model.logit_scale.detach().exp()), float(bias.detach())) if bias is not None else None
+
+    def match_prob(self, sims: np.ndarray) -> np.ndarray | None:
+        if self._calib is None:
+            return None
+        scale, bias = self._calib
+        return 1.0 / (1.0 + np.exp(-(scale * sims + bias)))
 
     def images(self, ims: list[Image.Image]) -> np.ndarray:
         t = self.torch

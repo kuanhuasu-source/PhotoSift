@@ -128,6 +128,8 @@ function Contest({ id, onEdit, onDeleted }) {
   const rubric = c.rubric;
   const cal = c.calibration;
   const names = rubric ? Object.fromEntries(rubric.criteria.map((x) => [x.key, x.name])) : {};
+  // The models refer to criteria by key (c1, c2 ...); show people the names instead.
+  const named = (t) => String(t || '').replace(/\bc(\d)\b/g, (m) => (names[m] ? `「${names[m]}」` : m));
 
   const coach = async (use_cloud) => {
     if (c.scored_local && !window.confirm('重新產生評分標準會清除這場比賽目前所有的評分，確定嗎？')) return;
@@ -204,8 +206,8 @@ function Contest({ id, onEdit, onDeleted }) {
         </div>
         ${rounds.length > 1 && html`<p class="small muted">歷次：${rounds.map((r) => `${r.label} ${r.agreement}`).join('　→　')}</p>`}
         ${cal.observations && cal.observations.length > 0 && html`<div><h3>${cloud.label}觀察到的差異</h3>
-          <ul style="margin:6px 0 0;padding-left:20px">${cal.observations.map((o) => html`<li>${o}</li>`)}</ul></div>`}
-        ${cal.notes && html`<div class="note"><b>外部模型給地端模型的修正提醒</b><br />${cal.notes}</div>
+          <ul style="margin:6px 0 0;padding-left:20px">${cal.observations.map((o) => html`<li>${named(o)}</li>`)}</ul></div>`}
+        ${cal.notes && html`<div class="note"><b>外部模型給地端模型的修正提醒</b><br />${named(cal.notes)}</div>
           <div class="row"><button class="btn local" disabled=${running || !local.ok} onClick=${() => startJob(`/contests/${id}/local?rescore=true`).then(load)}>
             <${Icon} name="chip" size=${14} /> 依提醒重新評分</button>
             <span class="small muted">地端模型帶著這份提醒把候選重評一次，再和外部評審已有的分數比對，可以看到一致度有沒有提高。不花 token。</span></div>`}`}

@@ -30,7 +30,8 @@ LIST_COLS = (
 SORTS = {
     "time": "p.taken_ts ASC, p.id",
     "time_desc": "p.taken_ts DESC, p.id DESC",
-    "score": "COALESCE(p.vlm_score, p.prefilter) DESC, p.id",
+    # Photos the local model has scored come first: its score and the rough pre-score are different scales.
+    "score": "(p.vlm_score IS NULL), COALESCE(p.vlm_score, p.prefilter) DESC, p.id",
     "prefilter": "p.prefilter DESC, p.id",
     "aesthetic": "p.aesthetic DESC, p.id",
     "tech": "p.tech DESC, p.id",
@@ -218,7 +219,9 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             return {"supported": False}
         import webview
 
-        res = w.create_file_dialog(webview.FOLDER_DIALOG)
+        # pywebview 6 renamed the constant; older versions only have FOLDER_DIALOG.
+        kind = webview.FileDialog.FOLDER if hasattr(webview, "FileDialog") else webview.FOLDER_DIALOG
+        res = w.create_file_dialog(kind)
         return {"supported": True, "path": res[0] if res else None}
 
     @app.get("/api/browse")
@@ -301,10 +304,15 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             emb, ids, vecs = ctx.vectors()
             if len(ids):
                 sims = vecs @ emb.texts([q])[0]
-                # Keep what stands clearly above the library's typical similarity to this query.
-                cut = max(float(np.quantile(sims, 0.80)), float(sims.max()) - 0.06)
+                prob = emb.match_prob(sims)
+                if prob is not None:
+                    # Calibrated model: drop everything when nothing really matches ("a dog" in a
+                    # library with no dogs), else keep what is within reach of the best match.
+                    keep = prob >= max(1.5e-4, float(prob.max()) / 300.0)
+                else:
+                    keep = sims >= max(float(np.quantile(sims, 0.80)), float(sims.max()) - 0.06)
                 for i in np.argsort(-sims)[:limit]:
-                    if sims[i] >= cut:
+                    if keep[i]:
                         scores[int(ids[i])] = float(sims[i])
         like = f"%{q}%"
         for r in ctx.db.all("SELECT id FROM photos WHERE caption LIKE ? OR tags LIKE ? OR filename LIKE ? LIMIT 400", (like, like, like)):

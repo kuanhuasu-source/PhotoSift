@@ -166,7 +166,8 @@ class LocalVLM:
             "model": self.model,
             "stream": False,
             "keep_alive": self.s.keep_alive,
-            "options": {"temperature": temperature, "num_predict": max_tokens},
+            # Room for one image, a long rubric and the answer; Ollama's default window can be too small.
+            "options": {"temperature": temperature, "num_predict": max_tokens, "num_ctx": 8192},
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user, "images": [base64.b64encode(b).decode() for b in images]},

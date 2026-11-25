@@ -1,7 +1,7 @@
 import { html, useState, useEffect, useRef, useCallback, api, fail, toast, useApp, Icon, Dialog, Bars, usePickFolder,
   n0, fmtDate, FLAW, CATS, VLM_KEYS, thumb, qs } from './ui.js';
 
-const SORTS = [['time_desc', '拍攝時間（新到舊）'], ['time', '拍攝時間（舊到新）'], ['score', '綜合分數'], ['aesthetic', '美感初評'],
+const SORTS = [['time_desc', '拍攝時間（新到舊）'], ['time', '拍攝時間（舊到新）'], ['score', '分數（地端模型評過的在前）'], ['aesthetic', '美感初評'],
   ['tech', '技術品質'], ['rating', '我的星等']];
 
 export function Tile({ p, onClick, showScore = true }) {
@@ -44,7 +44,7 @@ export function Library({ filters, setFilters }) {
 
   const load = useCallback(async (reset) => {
     const st = state.current;
-    if (reset) { st.offset = 0; st.done = false; st.key = key; }
+    if (reset) { st.offset = 0; st.done = false; st.key = key; st.loading = false; setTotal(null); }
     if (st.done || st.loading) return;
     st.loading = true; setLoading(true);
     const mine = st.key;
@@ -130,7 +130,7 @@ export function Library({ filters, setFilters }) {
       <label class="check"><input type="checkbox" checked=${!!f.best} onChange=${(e) => set({ best: e.target.checked })} />連拍只看最佳</label>
       <label class="check"><input type="checkbox" checked=${!!f.hide_rejects} onChange=${(e) => set({ hide_rejects: e.target.checked })} />隱藏淘汰</label>
       <span class="grow"></span>
-      <span class="count num">${f.q ? `「${f.q}」找到 ${n0(total)} 張` : `${n0(total)} 張`}</span>
+      <span class="count num">${total == null ? (f.q ? '搜尋中…' : '') : f.q ? `「${f.q}」找到 ${n0(total)} 張` : `${n0(total)} 張`}</span>
       <button class="btn sm" disabled=${exporting} onClick=${exportPicks} title="把標記為「挑選」的照片複製到另一個資料夾">
         <${Icon} name="out" size=${13} /> 匯出挑選的照片</button>
     </div>
@@ -138,10 +138,11 @@ export function Library({ filters, setFilters }) {
     <div class="grid">
       ${items.map((p, i) => html`<${Tile} key=${p.id} p=${p} onClick=${() => setOpen({ index: i })} />`)}
     </div>
-    ${!items.length && !loading && html`<div class="empty"><p>沒有符合條件的照片。</p>
+    ${!items.length && !loading && total != null && html`<div class="empty"><p>${f.q ? `找不到符合「${f.q}」的照片。可以換個說法，或描述得更具體一點。` : '沒有符合條件的照片。'}</p>
       <button class="btn" onClick=${() => { setQuery(''); setFilters({}); }}>清除篩選</button></div>`}
     <div ref=${sentinel} style="height:1px"></div>
-    ${loading && html`<div class="row muted" style="justify-content:center;padding:20px"><span class="spin"></span> 載入中…</div>`}
+    ${loading && html`<div class="row muted" style="justify-content:center;padding:20px"><span class="spin"></span>
+      ${f.q && !items.length ? '搜尋中…程式啟動後的第一次搜尋要先載入影像模型，會久一點。' : '載入中…'}</div>`}
 
     ${open && open.index != null && html`<${PhotoViewer} ids=${items.map((x) => x.id)} index=${open.index}
       onClose=${() => setOpen(null)} onPatch=${patchItem} />`}
