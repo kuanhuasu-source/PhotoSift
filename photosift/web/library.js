@@ -3,7 +3,7 @@ import { html, useState, useEffect, useRef, useCallback, api, fail, toast, useAp
 import { Editor, useRendered } from './editor.js';
 
 const SORTS = [['time_desc', '拍攝時間（新到舊）'], ['time', '拍攝時間（舊到新）'], ['score', '分數（地端模型評過的在前）'], ['aesthetic', '美感初評'],
-  ['tech', '技術品質'], ['rating', '我的星等']];
+  ['tech', '技術品質'], ['rating', '我的星等'], ['taste', '像我會選的']];
 
 export function Tile({ p, onClick, showScore = true }) {
   const ar = p.width && p.height ? Math.max(0.5, Math.min(2.4, p.width / p.height)) : 1.5;
@@ -94,7 +94,7 @@ export function Library({ filters, setFilters }) {
     </div></div>`;
   }
 
-  const fc = facets || { folders: [], events: [], categories: [], flaws: {} };
+  const fc = { folders: [], events: [], categories: [], flaws: {}, lights: [], ...(facets || {}) };
   const pending = status ? status.photos - status.analysed - status.unreadable : 0;
   return html`<div class="page">
     <div class="page-head">
@@ -113,8 +113,9 @@ export function Library({ filters, setFilters }) {
     </div>
 
     <div class="toolbar">
-      <select value=${f.sort} onChange=${(e) => set({ sort: e.target.value })} disabled=${!!f.q}>
-        ${SORTS.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
+      <select value=${f.sort} onChange=${(e) => set({ sort: e.target.value })} disabled=${!!f.q}
+        title=${status && !status.taste_ready ? '「像我會選的」需要你先標記至少 8 張照片（挑選和淘汰各 3 張以上）' : ''}>
+        ${SORTS.filter(([v]) => v !== 'taste' || (status && status.taste_ready) || (status && status.picks + status.rejects >= 8)).map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
       <select value=${f.event || ''} onChange=${(e) => set({ event: e.target.value })}>
         <option value="">所有事件</option>
         ${fc.events.map((e) => html`<option value=${e.id}>${e.title}（${e.count}）</option>`)}</select>
@@ -124,6 +125,9 @@ export function Library({ filters, setFilters }) {
       ${fc.folders.length > 1 && html`<select value=${f.folder || ''} onChange=${(e) => set({ folder: e.target.value })}>
         <option value="">所有資料夾</option>
         ${fc.folders.map((d) => html`<option value=${d.id}>${d.path.split('/').pop()}（${d.photos}）</option>`)}</select>`}
+      ${fc.lights.length > 0 && html`<select value=${f.light || ''} onChange=${(e) => set({ light: e.target.value })} title="由拍攝時間和 GPS 算出的太陽位置">
+        <option value="">不限光線時段</option>
+        ${fc.lights.map((l) => html`<option value=${l.key}>${l.label}（${l.count}）</option>`)}</select>`}
       <select value=${f.quality || ''} onChange=${(e) => set({ quality: e.target.value })}>
         <option value="">不限品質</option><option value="ok">沒有技術瑕疵</option><option value="flawed">有技術瑕疵</option>
         ${Object.entries(FLAW).map(([k, l]) => html`<option value=${k}>${l}（${fc.flaws[k] || 0}）</option>`)}</select>
@@ -155,14 +159,15 @@ export function Library({ filters, setFilters }) {
 
 function AnnotateDialog({ onClose }) {
   const { status, startJob } = useApp();
-  const todo = (status.photos - status.duplicates) - status.annotated;
+  const todo = (status.photos - status.duplicates) - status.annotated + (status.annotations_outdated || 0);
   const [limit, setLimit] = useState(Math.min(200, Math.max(todo, 1)));
   const [redo, setRedo] = useState(false);
   return html`<${Dialog} title="地端模型標註" sub=${`使用 ${status.local.model}，在這台電腦上執行，不花任何 token。`} onClose=${onClose}
     footer=${html`<button class="btn" onClick=${onClose}>取消</button>
       <button class="btn local" onClick=${() => { startJob('/annotate', { limit: +limit || 0, redo }); onClose(); }}>開始</button>`}>
     <p class="muted">地端模型會為每張照片寫一句描述、幾個標籤，並給構圖、光線、意境等分數。依初步分數由高到低處理，所以先跑一部分就能涵蓋最有潛力的照片；中途可以取消，已完成的會保留。</p>
-    <div class="field" style="max-width:260px"><span>這次處理幾張（還有 ${n0(Math.max(todo, 0))} 張未標註）</span>
+    ${status.annotations_outdated > 0 && html`<p class="note local">有 ${n0(status.annotations_outdated)} 張是用舊版格式標註的，缺少主體、光線、構圖手法這些新欄位，這次會一併更新。</p>`}
+    <div class="field" style="max-width:260px"><span>這次處理幾張（還有 ${n0(Math.max(todo, 0))} 張待處理）</span>
       <input type="number" min="1" value=${limit} onInput=${(e) => setLimit(e.target.value)} /></div>
     <label class="check"><input type="checkbox" checked=${redo} onChange=${(e) => setRedo(e.target.checked)} />已標註過的也重新標註（換了模型時使用）</label>
   <//>`;
@@ -253,12 +258,20 @@ export function PhotoViewer({ ids, index, onClose, onPatch, startMode = 'info', 
 
         <div><h3>分數</h3>
           <${Bars} kind="local" rows=${[['技術品質', Math.round(p.tech ?? 0), 100], ['美感初評', Math.round(p.aesthetic ?? 0), 100],
-            ...(p.vlm_score != null ? [['地端模型', Math.round(p.vlm_score), 100]] : [])]} />
+            ...(p.vlm_score != null ? [['地端模型', Math.round(p.vlm_score), 100]] : []),
+            ...(p.taste != null ? [['像我會選的', Math.round(p.taste), 100]] : [])]} />
           ${(p.flags || []).length > 0 && html`<div class="row wrap gap-s" style="margin-top:8px">${p.flags.map((x) => html`<span class="chip bad">${FLAW[x] || x}</span>`)}</div>`}
         </div>
 
         ${v && html`<div><h3>地端模型的細項評分（${p.vlm_model}）</h3>
           <${Bars} kind="local" rows=${VLM_KEYS.map(([k, l]) => [l, v[k]])} />
+          ${(v.main || v.shot) && html`<div class="kv" style="margin-top:10px">
+            ${v.main && html`<span>主體</span><span>${v.main}</span>`}
+            ${v.shot && html`<span>景別</span><span>${v.shot}${v.setting ? `・${v.setting}` : ''}</span>`}
+            ${v.light_type && html`<span>光線</span><span>${v.light_type}</span>`}
+            ${v.techniques && v.techniques.length > 0 && html`<span>構圖</span><span>${v.techniques.join('、')}</span>`}
+            ${v.palette && html`<span>色調</span><span>${v.palette}</span>`}
+            ${v.moment && html`<span>瞬間</span><span>捕捉到稍縱即逝的瞬間</span>`}</div>`}
           ${v.mood && html`<p class="small muted" style="margin-top:8px">氛圍：${v.mood}</p>`}
           ${v.flaws && v.flaws.length > 0 && html`<p class="small muted">缺點：${v.flaws.join('；')}</p>`}</div>`}
 
@@ -280,6 +293,7 @@ export function PhotoViewer({ ids, index, onClose, onPatch, startMode = 'info', 
         <div><h3>拍攝資訊</h3>
           <div class="kv">
             <span>時間</span><span>${fmtDate(p.taken_at)}${p.time_source === 'mtime' ? '（檔案時間）' : ''}</span>
+            ${p.light && html`<span>光線時段</span><span>${({ night: '夜晚', blue: '藍調時刻', golden: '黃金時刻', day: '白天' })[p.light]}${p.sun_elev != null ? `（太陽高度 ${Math.round(p.sun_elev)}°）` : ''}</span>`}
             ${p.event_title && html`<span>事件</span><span>${p.event_title}</span>`}
             <span>主題</span><span>${p.category_label || '—'}${p.category_top && p.category_top[1] ? `、${CATS[p.category_top[1][0]] || ''}` : ''}</span>
             ${p.camera && html`<span>相機</span><span>${p.camera}${p.lens ? `　${p.lens}` : ''}</span>`}

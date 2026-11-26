@@ -1,12 +1,14 @@
 import { html, useState, useEffect, useCallback, api, fail, toast, useApp, Icon, Dialog, Bars, usePickFolder, n0, thumb } from './ui.js';
 import { PhotoViewer } from './library.js';
+import { Wizard } from './wizard.js';
 
-const BLANK = { name: '', theme: '', rules: '', notes: '', scope: {}, sizes: { pool: 150, calibration: 16, finals: 24, picks: 5 }, exclude_flawed: true, max_per_event: 0 };
+const BLANK = { name: '', theme: '', rules: '', notes: '', scope: {}, sizes: { pool: 150, calibration: 16, triage: 48, finals: 12, picks: 5 }, exclude_flawed: true, max_per_event: 0 };
 
 export function Contests({ id }) {
   const { go, jobTick } = useApp();
   const [list, setList] = useState(null);
   const [form, setForm] = useState(null);
+  const [wizard, setWizard] = useState(false);
   const load = () => api('/contests').then(setList).catch(fail);
   useEffect(() => { load(); }, [jobTick, id]);
   if (!list) return null;
@@ -15,11 +17,12 @@ export function Contests({ id }) {
     <div class="page-head"><h1>比賽選片</h1>
       <span class="sub">地端模型負責大量初選，外部模型只在需要判斷力的地方出手。</span>
       <span class="grow"></span>
-      <button class="btn primary" onClick=${() => setForm(BLANK)}>新增比賽</button></div>
+      <button class="btn ghost" onClick=${() => setForm(BLANK)} title="不經過問答，直接填表單">用表單新增</button>
+      <button class="btn primary" onClick=${() => setWizard(true)}>新增比賽</button></div>
     ${!list.length
       ? html`<div class="empty"><h2>還沒有比賽</h2>
-          <p>告訴 PhotoSift 比賽的主題和規則，它會從你的相片庫裡一層一層篩出最適合投稿的照片，並說明每一張入選的理由。</p>
-          <button class="btn primary" onClick=${() => setForm(BLANK)}>新增比賽</button></div>`
+          <p>回答幾個關於比賽的問題，再用你自己的照片確認想要的感覺，PhotoSift 就會從相片庫裡一層一層篩出最適合投稿的照片，並說明每一張入選的理由。</p>
+          <button class="btn primary" onClick=${() => setWizard(true)}>新增比賽</button></div>`
       : html`<div class="split">
           <div class="clist">${list.map((c) => html`<div class="it ${c.id === cur ? 'on' : ''}" onClick=${() => go('contest', c.id)}>
             <div class="ellipsis"><b>${c.name}</b></div>
@@ -28,6 +31,8 @@ export function Contests({ id }) {
         </div>`}
     ${form && html`<${ContestForm} initial=${form} onClose=${() => setForm(null)}
       onSaved=${(c) => { setForm(null); load(); go('contest', c.id); }} />`}
+    ${wizard && html`<${Wizard} onClose=${() => setWizard(false)}
+      onCreated=${(c) => { setWizard(false); load(); go('contest', c.id); }} />`}
   </div>`;
 }
 
@@ -66,30 +71,34 @@ function ContestForm({ initial, onClose, onSaved }) {
     <div class="row wrap top gap-l">
       <div class="field" style="width:130px"><span>地端初選張數</span><input type="number" min="1" value=${f.sizes.pool} onInput=${(e) => size('pool', e.target.value)} /></div>
       <div class="field" style="width:130px"><span>外部校準張數</span><input type="number" min="4" value=${f.sizes.calibration} onInput=${(e) => size('calibration', e.target.value)} /></div>
+      <div class="field" style="width:150px"><span>外部總表初選張數</span><input type="number" min="0" value=${f.sizes.triage ?? 48} onInput=${(e) => setF({ ...f, sizes: { ...f.sizes, triage: Math.max(0, +e.target.value || 0) } })} /><span class="faint">0 代表不做</span></div>
       <div class="field" style="width:130px"><span>外部決選張數</span><input type="number" min="1" value=${f.sizes.finals} onInput=${(e) => size('finals', e.target.value)} /></div>
       <div class="field" style="width:130px"><span>要投稿幾張</span><input type="number" min="1" value=${f.sizes.picks} onInput=${(e) => size('picks', e.target.value)} /></div>
       <div class="field" style="width:150px"><span>每個事件最多入圍</span><input type="number" min="0" value=${f.max_per_event} onInput=${(e) => set('max_per_event', Math.max(0, +e.target.value || 0))} /><span class="faint">0 代表不限</span></div>
     </div>
     <label class="check"><input type="checkbox" checked=${f.exclude_flawed} onChange=${(e) => set('exclude_flawed', e.target.checked)} />排除有技術瑕疵的照片（你親自挑選的照片不受影響）</label>
-    <p class="small muted">只有「外部校準」和「外部決選」會把照片送到外部模型，張數就是上面設定的數字；其他步驟都在這台電腦上完成。</p>
+    <p class="small muted">只有校準、總表初選和決選會把照片送到外部模型。總表初選是把照片拼成編號的縮圖總表送出，每 16 張一張圖。其他步驟都在這台電腦上完成。</p>
   <//>`;
 }
 
 function Funnel({ c }) {
   const u = c.usage;
+  const triaged = c.scored_triage || 0;
   const steps = [
-    ['none', '範圍內的照片', c.scope_photos, '', true],
-    ['local', '去重複與瑕疵後的候選', c.pool, '地端', true],
+    ['none', '符合規定的照片', c.scope_photos, '', true],
+    ['local', '主題與品質召回的候選', c.pool, '地端', true],
     ['local', '地端模型評審', c.scored_local, '地端', c.scored_local > 0],
     ['cloud', '外部模型校準', c.scored_teacher, '外部', c.scored_teacher > 0],
-    ['cloud', '外部模型決選', c.scored_final, '外部', c.scored_final > 0],
+    ...(triaged || c.triage_next ? [['cloud', '外部看縮圖總表', triaged || c.triage_next, '外部', triaged > 0]] : []),
+    ['cloud', '外部原圖決選', c.scored_final, '外部', c.scored_final > 0],
     ['cloud', '建議投稿', c.summary ? c.summary.picks.length : 0, '', !!c.summary],
   ];
   return html`<div>
     <div class="funnel">${steps.map(([kind, label, n, who, done]) => html`<div class="fstep ${kind} ${done ? '' : 'todo'}">
       <div class="who">${who || ' '}</div><div class="n">${done ? n0(n) : '—'}</div><div class="l">${label}</div></div>`)}</div>
+    ${c.library_photos > c.scope_photos && html`<p class="small muted" style="margin-top:8px">相片庫共 ${n0(c.library_photos)} 張，其中 ${n0(c.scope_photos)} 張在這場比賽的範圍與規定之內。</p>`}
     ${u.total_tokens > 0 && html`<p class="small muted" style="margin-top:8px">
-      外部模型到目前用了 <b class="num" style="color:var(--text)">${n0(u.total_tokens)}</b> tokens、看了 ${u.images_sent} 張次照片。
+      外部模型到目前用了 <b class="num" style="color:var(--text)">${n0(u.total_tokens)}</b> tokens，上傳了 ${u.images_sent} 張圖，一共看過 <b style="color:var(--text)">${u.photos_seen}</b> 張不同的照片。
       ${u.saved_pct > 0 ? html`如果把範圍內 ${n0(u.scope_photos)} 張都送給外部模型看一次，大約要 ${n0(u.baseline_tokens)} tokens，這樣做省了約 <b style="color:var(--local)">${u.saved_pct}%</b>。` : ''}</p>`}
   </div>`;
 }
@@ -169,6 +178,16 @@ function Contest({ id, onEdit, onDeleted }) {
       <button class="btn sm" onClick=${() => onEdit({ id: c.id, name: c.name, ...c.brief })}><${Icon} name="edit" size=${13} /> 編輯</button>
       <button class="btn sm danger" onClick=${remove}><${Icon} name="trash" size=${13} /></button>
     </div>
+    ${(c.brief.profile || c.brief.qa || c.brief.insight || c.brief.constraints) && html`<details style="margin-bottom:12px">
+      <summary class="muted small" style="cursor:pointer">比賽定義（問答精靈記錄的內容）</summary>
+      <div class="kv wide" style="margin-top:8px">
+        ${Object.entries(c.brief.profile || {}).map(([k, v]) => html`<span>${({ occasion: '性質', judges: '評審', strictness: '切題程度', goal: '目標', styles: '風格' })[k] || k}</span><span>${Array.isArray(v) ? v.join('、') : v}</span>`)}
+        ${Object.entries(c.brief.constraints || {}).map(([k, v]) => html`<span>${({ date_from: '拍攝起日', date_to: '拍攝迄日', orientation: '方向', min_long_edge: '長邊像素', device: '器材', people: '人物' })[k] || k}</span>
+          <span>${({ landscape: '限橫式', portrait: '限直式', square: '限正方形', phone: '限手機', camera: '限相機', none: '不可有清楚可見的人' })[v] || v}</span>`)}
+        ${(c.brief.qa || []).map((x) => html`<span>問答</span><span>${x.q}　<b>${x.a}</b></span>`)}
+        ${c.brief.insight && html`<span>偏好</span><span>${c.brief.insight}</span>`}
+        ${c.brief.examples && html`<span>範例</span><span>${(c.brief.examples.liked || []).length} 張符合、${(c.brief.examples.disliked || []).length} 張不符合</span>`}
+      </div></details>`}
     <${Funnel} c=${c} />
 
     <${Step} ix="1" kind="cloud" done=${!!rubric} title="評分標準"
@@ -179,15 +198,21 @@ function Contest({ id, onEdit, onDeleted }) {
           ${busy === 'coach' ? html`<span class="spin"></span>` : html`<${Icon} name="cloud" size=${14} />`} ${rubric ? '重新產生' : `請 ${cloud.label || '外部模型'} 設計`}</button>
         ${!rubric && html`<button class="btn" disabled=${busy || running} onClick=${() => coach(false)}>用內建標準</button>`}</div>`}>
       ${!rubric && needKey}
+      ${rubric && rubric.plan && rubric.plan.length > 0 && html`<div class="plan"><b>${cloud.label || '外部模型'}打算這樣評你的照片</b>
+        <ol>${rubric.plan.map((x) => html`<li>${x}</li>`)}</ol>
+        <span class="small muted">理解得不對的話，按右上角的「編輯」修改比賽定義，再重新產生評分標準。</span></div>`}
       ${rubric && html`
         <div class="rubric">${rubric.criteria.map((x) => html`<div><span class="w">${x.weight}%</span> <b>${x.name}</b></div>
           <div><div>${x.description}</div><div class="small muted">高分：${x.high}</div><div class="small muted">低分：${x.low}</div></div>`)}</div>
         <div class="note"><b>給地端模型的評審須知</b><br />${rubric.judge_brief}</div>
-        ${rubric.ideal && html`<p class="small muted">理想的得獎作品：${rubric.ideal}</p>`}`}
+        ${rubric.ideal && html`<p class="small muted">理想的得獎作品：${rubric.ideal}</p>`}
+        ${rubric.probes && rubric.probes.length > 0 && html`<details><summary class="muted small" style="cursor:pointer">用來從相片庫找候選的 ${rubric.probes.length} 種畫面</summary>
+          <div class="row wrap gap-s" style="margin-top:8px">${rubric.probes.map((x) => html`<span class="chip local">${x.zh}</span>`)}
+            ${(rubric.avoid || []).map((x) => html`<span class="chip bad" title="符合這種畫面的照片會被扣分">避免：${x.zh}</span>`)}</div></details>`}`}
     <//>
 
     <${Step} ix="2" kind="local" done=${c.scored_local > 0 && c.scored_local >= c.pool} title="地端評審"
-      hint=${`地端模型照著評分標準，把候選的 ${n0(c.pool)} 張逐張評過。在這台電腦上執行，不花 token，可以中途取消再接著跑。`}
+      hint=${`先用評分標準裡的畫面描述、你的偏好和品質分數，從 ${n0(c.scope_photos)} 張裡找出 ${n0(c.pool)} 張候選，再由地端模型逐張評審。不花 token，可以中途取消再接著跑。`}
       action=${html`<button class="btn ${c.scored_local >= c.pool ? '' : 'local'}" disabled=${!rubric || running || !local.ok}
         title=${!local.ok ? local.error : ''} onClick=${() => startJob(`/contests/${id}/local`).then(load)}>
         <${Icon} name="chip" size=${14} /> ${c.scored_local ? (c.scored_local >= c.pool ? '已完成' : `繼續（${c.scored_local}/${c.pool}）`) : '開始'}</button>`}>
@@ -196,7 +221,7 @@ function Contest({ id, onEdit, onDeleted }) {
     <//>
 
     <${Step} ix="3" kind="cloud" done=${!!cal} title="校準"
-      hint=${`外部模型用同一份標準評 ${c.brief.sizes.calibration} 張樣本。比較兩邊的分數，就知道地端評審準不準，並由外部模型告訴它哪裡看錯了。`}
+      hint=${`外部模型用同一份標準評 ${c.brief.sizes.calibration} 張樣本並寫好評語。比較兩邊的分數，就知道地端評審準不準，並由外部模型告訴它哪裡看錯了。這些照片之後不會再上傳第二次。`}
       action=${html`<button class="btn ${cal ? '' : 'primary'}" disabled=${running || c.scored_local < 4 || !cloud.has_key} onClick=${() => ask('calibrate')}>
         <${Icon} name="cloud" size=${14} /> ${cal ? '重新校準' : '選出樣本'}</button>`}>
       ${cal && html`
@@ -215,7 +240,9 @@ function Contest({ id, onEdit, onDeleted }) {
     <//>
 
     <${Step} ix="4" kind="cloud" done=${!!c.summary} title="決選"
-      hint=${`只有排名最前面的 ${c.brief.sizes.finals} 張會送給外部模型，逐張寫評語，再把最好的幾張放在一起比較、排出名次。`}
+      hint=${c.triage_next
+        ? `外部模型先看 ${c.triage_next} 張候選的縮圖總表${c.triage_next > c.brief.sizes.triage ? '（校準時兩邊看法差距較大，所以多看一些）' : ''}，挑出最多 ${c.brief.sizes.finals} 張再看原圖寫評語，最後用一張總表並排比較、排出名次。`
+        : `排名最前面的 ${c.brief.sizes.finals} 張會送給外部模型逐張寫評語，再用一張總表並排比較、排出名次。`}
       action=${html`<button class="btn ${c.summary ? '' : 'primary'}" disabled=${running || !c.scored_local || !cloud.has_key} onClick=${() => ask('finals')}>
         <${Icon} name="cloud" size=${14} /> ${c.summary ? '重新決選' : '選出入圍'}</button>`}>
       ${c.summary && c.summary.overall && html`<div class="note"><b>總評與投稿建議</b><br />${c.summary.overall}</div>`}
@@ -263,6 +290,8 @@ function Result({ r, i, names, pick, why, onOpen, onEdit }) {
         <span><span class="chip local">地端評審</span> <b>${Math.round(r.local_total)}</b></span>
       </div>
       ${why && html`<p>${why}</p>`}
+      ${!why && r.triage && r.triage.picked && html`<p class="small"><span class="chip cloud">總表初選入選</span>　${r.triage.why}</p>`}
+      ${r.local && r.local.probe && html`<p class="small faint">因為符合「${r.local.probe}」而成為候選${r.triage && !r.triage.picked ? '；外部模型看過縮圖，沒有選進決選' : ''}</p>`}
       ${f && html`<p class="small"><b>優點</b>　${f.strengths}</p><p class="small muted"><b>可能扣分</b>　${f.weaknesses}</p>
         ${f.edit && f.edit !== '不需調整' ? html`<p class="small muted"><b>後製方向</b>　${f.edit}</p>` : ''}`}
       <div class="row gap-s"><button class="btn sm" onClick=${onEdit}><${Icon} name="edit" size=${13} /> ${r.edited ? '繼續後製' : '後製'}</button>
@@ -276,13 +305,15 @@ function Result({ r, i, names, pick, why, onOpen, onEdit }) {
 
 function ConfirmUpload({ c, onClose, onGo }) {
   const what = c.step === 'calibrate' ? '校準' : '決選';
-  return html`<${Dialog} wide title=${`送出 ${c.photo_ids.length} 張照片給 ${c.provider} ${what}`}
+  const sheets = c.mode === 'sheets';
+  return html`<${Dialog} wide title=${sheets ? `送出 ${c.photo_ids.length} 張候選的縮圖總表給 ${c.provider}` : `送出 ${c.photo_ids.length} 張照片給 ${c.provider} ${what}`}
     sub=${`模型：${c.model || '（尚未選擇）'}`} onClose=${onClose}
     footer=${html`<span class="small muted grow">預估約 ${n0(c.est_tokens)} tokens${c.via === 'cli' ? '，透過命令列工具送出，計入訂閱用量（工具本身還會多用一些）' : ''}</span>
       <button class="btn" onClick=${onClose}>取消</button>
-      <button class="btn primary" disabled=${!c.photo_ids.length} onClick=${onGo}><${Icon} name="cloud" size=${14} /> 送出這 ${c.photo_ids.length} 張</button>`}>
-    <p class="muted">只有下面這些照片會離開這台電腦。上傳的是縮小到長邊 ${c.image_px}px 的複本，已移除拍攝時間、相機與 GPS 等資訊；原始檔不會上傳。</p>
+      <button class="btn primary" disabled=${!c.photo_ids.length} onClick=${onGo}><${Icon} name="cloud" size=${14} /> 送出</button>`}>
+    ${sheets
+      ? html`<p class="muted">下面這 ${c.photo_ids.length} 張會先拼成 ${c.sheets} 張編號的縮圖總表送出，連同地端模型為每張寫的文字說明。外部模型從中挑出最多 ${c.full} 張，只有被挑中的才會再以長邊 ${c.image_px}px 的複本送出（校準時已經看過的不會重送）。所有複本都已移除拍攝時間、相機與 GPS；原始檔不會上傳。</p>`
+      : html`<p class="muted">只有下面這些照片會離開這台電腦。上傳的是縮小到長邊 ${c.image_px}px 的複本，已移除拍攝時間、相機與 GPS 等資訊；原始檔不會上傳。</p>`}
     <div class="thumbs">${c.photo_ids.map((id) => html`<img loading="lazy" src=${thumb(id)} alt="" />`)}</div>
-    ${c.step === 'finals' && html`<p class="small muted">逐張評語之後，分數最高的幾張會再一起送出一次做比較排名，所以實際的張次會比入圍張數多一些。</p>`}
   <//>`;
 }

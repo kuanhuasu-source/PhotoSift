@@ -127,10 +127,14 @@ class FakeVLM:
             if t == "boolean":
                 return False
             if t == "array":
-                return [fake(spec["items"])]
+                self.n = getattr(self, "n", 0) + 1
+                return [fake(spec["items"]), fake(spec["items"])]
             if t == "object":
                 return {k: fake(v) for k, v in spec["properties"].items()}
-            return spec["enum"][0] if "enum" in spec else "測試文字"
+            if "enum" in spec:
+                return spec["enum"][0]
+            self.k = getattr(self, "k", 0) + 1
+            return f"測試文字{self.k}"  # distinct strings, like a real model's answers
 
         return {k: fake(spec) for k, spec in props.items()}
 

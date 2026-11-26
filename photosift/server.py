@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import cloud, config, contest, editing, export, grouping, imaging, local_vlm, pipeline, retouch, sun, taste, taxonomy
+from . import cloud, config, contest, editing, export, grouping, imaging, local_vlm, pipeline, retouch, sun, taste, taxonomy, wizard
 from .cloud import CloudError
 from .context import Ctx
 from .db import photo_dict
@@ -102,6 +102,13 @@ class ExportIn(BaseModel):
 
 class RenameIn(BaseModel):
     title: str
+
+
+class WizardIn(BaseModel):
+    draft: dict = {}
+    text: str = ""
+    round: int = 1
+    labels: dict[str, str] = {}
 
 
 class RecipeIn(BaseModel):
@@ -691,6 +698,48 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         if not body.photo_ids:
             raise HTTPException(400, "沒有選取照片")
         return export.copy_photos(ctx, body.photo_ids, body.dest, body.include_raw)
+
+    # ----------------------------------------------------- contest wizard
+
+    @app.exception_handler(ValueError)
+    async def value_error(_, e: ValueError):
+        return JSONResponse({"detail": str(e)}, status_code=400)
+
+    @app.get("/api/wizard/questions")
+    def wizard_questions():
+        return {"questions": wizard.QUESTIONS}
+
+    @app.post("/api/wizard/parse")
+    def wizard_parse(body: WizardIn):
+        if len(body.text.strip()) < 20:
+            raise HTTPException(400, "請貼上比賽簡章的內容。")
+        return wizard.parse_announcement(ctx, body.text)
+
+    @app.post("/api/wizard/followups")
+    def wizard_followups(body: WizardIn):
+        return {"questions": wizard.followups(ctx, body.draft)}
+
+    @app.post("/api/wizard/examples")
+    def wizard_examples(body: WizardIn):
+        return wizard.examples(ctx, body.draft, body.round, body.labels)
+
+    @app.post("/api/wizard/insight")
+    def wizard_insight(body: WizardIn):
+        return wizard.insight(ctx, body.draft, body.labels)
+
+    @app.post("/api/wizard/preview")
+    def wizard_preview(body: WizardIn):
+        return wizard.preview(ctx, body.draft)
+
+    @app.post("/api/wizard/create")
+    def wizard_create(body: WizardIn):
+        """Turns the finished draft into a contest. The rubric is written in a separate step."""
+        d = body.draft
+        fields = wizard.to_contest(d, d.get("sizes") or wizard.preview(ctx, d)["sizes"])
+        cid = contest.create(ctx, fields["name"], fields["theme"], fields["rules"], fields["notes"], fields["scope"],
+                             fields["sizes"], True, int(d.get("max_per_event") or 0),
+                             {k: fields[k] for k in contest.BRIEF_EXTRA})  # fmt: skip
+        return contest.state(ctx, cid)
 
     # -------------------------------------------------------------- settings
 
