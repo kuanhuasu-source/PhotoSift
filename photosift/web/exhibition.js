@@ -44,6 +44,44 @@ function Form({ initial, onClose, onSaved }) {
   <//>`;
 }
 
+// Start a theme from examples: tick a few photos, and the rest of the series is found from them.
+function SeedPicker({ base, count, onClose, onDone }) {
+  const { status } = useApp();
+  const [list, setList] = useState(null);
+  const [sel, setSel] = useState([]);
+  const [only, setOnly] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const local = status ? status.local : {};
+  useEffect(() => {
+    api(base + '/choices').then((l) => { setList(l); setSel(l.filter((p) => p.picked).slice(0, count).map((p) => p.photo_id)); }).catch(fail);
+  }, []);
+  const toggle = (pid) => setSel((cur) => (cur.includes(pid) ? cur.filter((v) => v !== pid) : cur.length < count ? [...cur, pid] : cur));
+  const start = async () => {
+    setBusy(true);
+    try { onDone(await api(base + '/theme', { body: { seeds: sel } })); } catch (e) { fail(e); setBusy(false); }
+  };
+  const picked = list ? list.filter((p) => p.picked).length : 0;
+  const shown = (list || []).filter((p) => !only || p.picked || sel.includes(p.photo_id));
+  return html`<${Dialog} wide title="從我預選的照片開始" sub="勾選幾張「我想要的就是這種感覺」的照片，建議 3 到 8 張。" onClose=${onClose}
+    footer=${html`<span class="small muted grow">已選 ${sel.length} 張${local.ok ? '。地端模型會看這幾張，替系列命名並描述還有哪些畫面屬於它，大約需要十幾秒。' : '。地端模型沒有連上，會只用畫面相似度找照片，系列名稱請自己取。'}</span>
+      <button class="btn" onClick=${onClose}>取消</button>
+      <button class="btn local" disabled=${busy || !sel.length} onClick=${start}>${busy ? html`<span class="spin"></span>` : ''} 用這 ${sel.length} 張定義主題</button>`}>
+    <div class="row wrap" style="margin-bottom:10px">
+      <span class="small muted grow">${picked > 0 ? `你在圖庫挑選（按 P）過的 ${picked} 張排在最前面，已經先幫你勾起來。` : '想從很多照片裡找，可以先到「圖庫」用搜尋和篩選找到照片，按 P 挑選，再回到這裡。'}
+        你選的照片一定會進候選，策展人也會被告知這幾張要優先保留。</span>
+      ${picked > 0 && html`<label class="check small"><input type="checkbox" checked=${only} onChange=${(e) => setOnly(e.target.checked)} /> 只看我挑選過的</label>`}
+      ${sel.length > 0 && html`<a class="small" onClick=${() => setSel([])}>全部取消</a>`}
+    </div>
+    ${!list && html`<div class="row muted"><span class="spin"></span> 讀取中…</div>`}
+    <div class="pickgrid">${shown.map((p) => html`<div key=${p.photo_id} class=${sel.includes(p.photo_id) ? 'on' : ''} title=${p.caption || ''} onClick=${() => toggle(p.photo_id)}>
+      <img loading="lazy" src=${thumb(p.photo_id)} alt="" />
+      ${sel.includes(p.photo_id) && html`<b>${sel.indexOf(p.photo_id) + 1}</b>`}
+      ${p.print.level !== 'ok' && html`<span class="chip ${p.print.level === 'low' ? 'bad' : ''}">${p.print.dpi} dpi</span>`}
+      ${p.picked && html`<i title="你在圖庫挑選過">P</i>`}</div>`)}</div>
+    ${list && list.length === 0 && html`<p class="muted">相片庫裡沒有夠印這個尺寸的照片。</p>`}
+  <//>`;
+}
+
 export function Exhibitions({ id }) {
   const { go, jobTick, status } = useApp();
   const [list, setList] = useState(null);
@@ -134,6 +172,7 @@ function Exhibition({ id, onEdit, onDeleted }) {
   const [confirm, setConfirm] = useState(null);
   const [view, setView] = useState(null);
   const [zip, setZip] = useState(false);
+  const [picker, setPicker] = useState(false);
   const [pickFolder, folderDlg] = usePickFolder();
   const base = '/exhibitions/' + id;
   const load = useCallback(() => api(base).then(setX).catch(fail), [id]);
@@ -147,10 +186,8 @@ function Exhibition({ id, onEdit, onDeleted }) {
   const setSpec = (k, v) => call('', { spec: { [k]: v } }, 'PUT');
   const patch = (pid, body) => call(`/works/${pid}`, body, 'PATCH');
   const arrange = (pid, body) => call(`/works/${pid}/arrange`, body);
-  const choose = async (body) => {
-    if (x.works.length && !window.confirm('換主題會清除目前的策展結果和候補名單，已經寫好的說明也會一起清掉。確定嗎？')) return;
-    await call('/theme', body);
-  };
+  const replacing = () => !x.works.length || window.confirm('換主題會清除目前的策展結果和候補名單，已經寫好的說明也會一起清掉。確定嗎？');
+  const choose = async (body) => { if (replacing()) await call('/theme', body); };
   const ask = async (pid) => {
     setAsking(pid);
     try { await api(`${base}/works/${pid}/questions`, { method: 'POST' }); await load(); } catch (e) { fail(e); }
@@ -198,7 +235,11 @@ function Exhibition({ id, onEdit, onDeleted }) {
       action=${html`<button class="btn ${x.ideas ? '' : 'local'}" disabled=${running} onClick=${() => startJob(base + '/propose')}>
         <${Icon} name="chip" size=${14} /> ${x.ideas ? '重新提案' : '請地端模型提案'}</button>`}>
       ${x.theme && html`<div class="note local"><b>目前的主軸：${x.theme.title}</b>${x.theme.pitch && x.theme.pitch !== x.theme.title ? html`<br />${x.theme.pitch}` : ''}
-        <br /><span class="small">符合的照片有 ${x.theme.available} 張，策展人會看到其中最好的 ${x.pool.length} 張。</span></div>`}
+        ${x.theme.thread ? html`<br /><span class="small">${x.theme.thread}</span>` : ''}
+        ${x.theme.kind === 'seeds'
+          ? html`<br /><span class="small">從你預選的 ${x.theme.pinned.length} 張出發，另外找到 ${x.pool.length - x.pool.filter((p) => p.pinned).length} 張建議的照片。
+              ${x.theme.probes && x.theme.probes.length ? `除了畫面相近的，也找了這些畫面：${x.theme.probes.join('、')}。` : ''}系列名稱是模型取的，可以在策展後再改。</span>`
+          : html`<br /><span class="small">符合的照片有 ${x.theme.available} 張，策展人會看到其中最好的 ${x.pool.length} 張。</span>`}</div>`}
       ${x.ideas && x.ideas.ideas.length === 0 && html`<div class="note bad">相片庫裡只有 ${n0(x.ideas.eligible)} 張照片夠清楚、也夠印 ${frame}，不足以組成系列。
         印這個尺寸，照片的長邊至少要 ${n0(Math.ceil((sp.min_dpi * sp.frame_w) / 2.54))} 像素；從網路下載或通訊軟體傳來的縮小檔通常不夠，請匯入相機或手機的原始檔。</div>`}
       ${x.ideas && x.ideas.ideas.length > 0 && html`<p class="small muted">相片庫裡有 ${n0(x.ideas.eligible)} 張照片夠清楚、也夠印 ${frame}。下面是從中找到的 ${x.ideas.ideas.length} 個方向：</p>
@@ -213,6 +254,8 @@ function Exhibition({ id, onEdit, onDeleted }) {
       <div class="row"><input type="text" class="grow" style="max-width:520px" value=${own} placeholder="或自己描述主題，例如：旅途中安靜的水面"
         onInput=${(e) => setOwn(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && own.trim() && choose({ text: own })} />
         <button class="btn" disabled=${!own.trim()} onClick=${() => choose({ text: own })}>用我的主題找照片</button></div>
+      <div class="row"><button class="btn" onClick=${() => replacing() && setPicker(true)}><${Icon} name="check" size=${14} /> 從我預選的照片開始…</button>
+        <span class="small muted">先挑幾張你心目中的代表作，由它們定義主題，再從相片庫找出其他適合的照片。</span></div>
     <//>
 
     <${Step} ix="2" kind="cloud" done=${!!cur} title="策展"
@@ -225,7 +268,8 @@ function Exhibition({ id, onEdit, onDeleted }) {
         <div class="poolgrid">${x.pool.map((p) => html`<div key=${p.photo_id} title=${p.caption || ''}>
           <img loading="lazy" src=${thumb(p.photo_id)} alt="" onClick=${() => setView({ ids: x.pool.map((q) => q.photo_id), index: x.pool.findIndex((q) => q.photo_id === p.photo_id) })} />
           <button class="btn ghost sm" title="不要這張" onClick=${() => call('/pool', { excluded: [...x.theme.excluded, p.photo_id] }, 'PUT')}><${Icon} name="x" size=${12} /></button>
-          ${p.print.level !== 'ok' && html`<span class="chip">${p.print.dpi} dpi</span>`}</div>`)}</div>
+          ${p.print.level !== 'ok' && html`<span class="chip">${p.print.dpi} dpi</span>`}
+          ${p.pinned && html`<i title="你預選的照片，策展人會優先保留">預選</i>`}</div>`)}</div>
         ${x.theme.excluded.length > 0 && html`<a class="small" onClick=${() => call('/pool', { excluded: [] }, 'PUT')}>放回被移除的 ${x.theme.excluded.length} 張</a>`}</details>`}
       ${cur && html`<div class="curation">
         <div class="headline">${cur.title}</div>
@@ -315,6 +359,7 @@ function Exhibition({ id, onEdit, onDeleted }) {
         策展人會從中選出 ${confirm.count} 張。原始檔不會上傳。</p>
       <div class="thumbs">${confirm.photo_ids.map((pid) => html`<img loading="lazy" src=${thumb(pid)} alt="" />`)}</div>
     <//>`}
+    ${picker && html`<${SeedPicker} base=${base} count=${sp.count} onClose=${() => setPicker(false)} onDone=${(r) => { setX(r); setPicker(false); }} />`}
     ${view && html`<${PhotoViewer} ids=${view.ids} index=${view.index} startMode=${view.mode || 'info'} onClose=${() => { setView(null); load(); }} />`}
     ${folderDlg}
   </div>`;

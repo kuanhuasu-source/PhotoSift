@@ -173,6 +173,7 @@ class ExhibitionIn(BaseModel):
 class ThemeIn(BaseModel):
     key: str | None = None
     text: str | None = None
+    seeds: list[int] | None = None
 
 
 class PoolIn(BaseModel):
@@ -913,8 +914,14 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
     @app.post("/api/exhibitions/{xid}/theme")
     def exhibition_theme(xid: int, body: ThemeIn):
         _show(xid)
-        exhibition.choose(ctx, xid, body.key, body.text)
+        exhibition.choose(ctx, xid, body.key, body.text, body.seeds)
         return _show(xid)
+
+    @app.get("/api/exhibitions/{xid}/choices")
+    def exhibition_choices(xid: int):
+        """Photos to start a theme from: the user's library picks first, then the best printable ones."""
+        _show(xid)
+        return exhibition.choices(ctx, xid)
 
     @app.put("/api/exhibitions/{xid}/pool")
     def exhibition_pool(xid: int, body: PoolIn):

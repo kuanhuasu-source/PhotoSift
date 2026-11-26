@@ -138,6 +138,86 @@ def test_choosing_a_theme_sets_the_candidates(show, fakes):
         exhibition.choose(ctx, xid, text="  ")
 
 
+def test_like_some_of_the_chosen_photos_not_their_average():
+    import numpy as np
+
+    def unit(*v):
+        a = np.array(v, dtype=float)
+        return a / np.linalg.norm(a)
+
+    two = np.stack([unit(1, 0, 0), unit(0, 1, 0)])  # the user chose two quite different pictures
+    cands = np.stack([unit(1, 0.1, 0), unit(1, 1, 0), unit(0, 0, 1), unit(0.1, 1, 0)])
+    near_a, between, unrelated, near_b = exhibition.seed_fit(cands, two)
+    assert near_a > between > unrelated and near_b > between and abs(near_a - near_b) < 1e-9
+    # with more examples one odd choice no longer decides: a candidate has to be like two of them
+    five = np.stack([unit(1, 0, 0), unit(1, 0.05, 0), unit(1, 0, 0.05), unit(0, 1, 0), unit(0, 1, 0.05)])
+    like_three, like_two, like_none = exhibition.seed_fit(np.stack([unit(1, 0.02, 0), unit(0.02, 1, 0), unit(0, 0, 1)]), five)
+    assert abs(like_three - like_two) < 0.01 and like_none < 0.1
+    lone = np.stack([*five[:4], unit(0, 0, 1)])  # one outlier among the examples pulls in nothing on its own
+    assert exhibition.seed_fit(np.stack([unit(0, 0.02, 1)]), lone)[0] < 0.6
+
+
+def test_a_theme_from_a_few_photos_the_user_chose(show, fakes):
+    ctx, xid, ids, _ = show
+    vlm, prov = fakes
+    seeds = [ids["K2.jpg"], ids["K5.jpg"]]
+    calls = vlm.calls
+    theme = exhibition.choose(ctx, xid, seeds=seeds, use_model=False)
+    assert vlm.calls == calls and not prov.calls  # similarity alone needs no model
+    assert (theme["kind"], theme["title"], theme["pinned"], theme["photo_ids"][:2]) == ("seeds", "我預選的系列", seeds, seeds)
+    rest = theme["photo_ids"][2:]
+    spec = exhibition.get(ctx, xid)["spec"]
+    ok = {p["id"] for p in exhibition.eligible(ctx, spec)}
+    assert len(theme["photo_ids"]) == 10 and len(set(theme["photo_ids"])) == 10 and set(rest) <= ok - set(seeds)
+    s = exhibition.state(ctx, xid)
+    assert [p["pinned"] for p in s["pool"]] == [True, True] + [False] * 8 and s["theme"]["kind"] == "seeds"
+    # the on-device model reads the chosen photos: one look, a name, and descriptions of what else would belong
+    seen = {}
+
+    def reads(system, user, images=None, schema=None, **kw):
+        seen.update(user=user, images=len(images or []))
+        return {"title": "靜水", "pitch": "停下來的時刻", "thread": "冷色調與水平線", "probes": [{"zh": "安靜的水面", "en": "calm still water"}, {"zh": "", "en": ""}]}
+
+    vlm.chat_json = reads
+    named = exhibition.choose(ctx, xid, seeds=seeds)
+    assert seen["images"] == 1 and "我想要的就是這種感覺" in seen["user"] and "展出 6 張作品" in seen["user"]
+    assert (named["title"], named["pitch"], named["probes"]) == ("靜水", "停下來的時刻", ["安靜的水面"]) and named["photo_ids"][:2] == seeds
+    assert len(named["photo_ids"]) == 10 and not prov.calls
+    # a photo the user insists on stays in, even one that will not print well; that is shown, not hidden
+    small = exhibition.choose(ctx, xid, seeds=[ids["KS.jpg"], ids["K2.jpg"], ids["K2.jpg"], 99999], use_model=False)
+    assert small["pinned"] == [ids["KS.jpg"], ids["K2.jpg"]]
+    assert exhibition.state(ctx, xid)["pool"][0]["print"]["level"] == "low"
+    with pytest.raises(ValueError, match="請先選"):
+        exhibition.choose(ctx, xid, seeds=[99999], use_model=False)
+
+
+def test_the_curator_is_told_which_photos_are_the_users_own(show, fakes):
+    ctx, xid, ids, _ = show
+    vlm, prov = fakes
+    seeds = [ids["K2.jpg"], ids["K5.jpg"], ids["T1.jpg"]]
+    exhibition.choose(ctx, xid, seeds=seeds, use_model=False)
+    exhibition.curate(ctx, xid, "cloud")
+    sent = prov.calls[-1]["text"]
+    assert sent.count("｜攝影者預選") == 3 and "標示「攝影者預選」的 3 張是他自己挑出來定義這個系列的" in sent and "請保留" in sent
+    lines = [ln for ln in sent.split("\n") if ln.endswith("攝影者預選")]
+    assert [ln.split(".")[0] for ln in lines] == ["1", "2", "3"]  # and they come first on the sheet
+    exhibition.choose(ctx, xid, text="旅途")
+    exhibition.curate(ctx, xid, "cloud")
+    assert "攝影者預選" not in prov.calls[-1]["text"]
+
+
+def test_starting_points_offer_library_picks_first(show):
+    ctx, xid, ids, _ = show
+    ctx.db.run("UPDATE photos SET flag='pick' WHERE filename IN ('T3.jpg', 'KS.jpg')")
+    ctx.db.run("UPDATE photos SET rating=5 WHERE filename='K4.jpg'")
+    got = exhibition.choices(ctx, xid)
+    assert {got[0]["photo_id"], got[1]["photo_id"]} == {ids["T3.jpg"], ids["KS.jpg"]} and got[0]["picked"] and got[1]["picked"]
+    assert got[2]["photo_id"] == ids["K4.jpg"] and not got[2]["picked"]  # then what was rated, then the rest by quality
+    small = next(p for p in got if p["photo_id"] == ids["KS.jpg"])
+    assert small["print"]["level"] == "low"  # offered because the user picked it, with the problem visible
+    assert ids["KX.jpg"] not in [p["photo_id"] for p in got] and len(got) == 15
+
+
 @pytest.fixture
 def curated(show, fakes):
     ctx, xid, ids, root = show
@@ -358,6 +438,12 @@ def test_exhibition_over_http(show, fakes, tmp_path):
         s = client.post(f"/api/exhibitions/{xid}/theme", json={"key": key}).json()
         assert s["theme"]["key"] == key and len(s["pool"]) >= 5 and "print" in s["pool"][0]
         assert client.post(f"/api/exhibitions/{xid}/theme", json={"key": "nope"}).status_code == 400
+        offered = client.get(f"/api/exhibitions/{xid}/choices").json()
+        mine = [offered[0]["photo_id"], offered[3]["photo_id"]]
+        by_example = client.post(f"/api/exhibitions/{xid}/theme", json={"seeds": mine}).json()
+        assert by_example["theme"]["kind"] == "seeds" and by_example["theme"]["pinned"] == mine
+        assert [p["photo_id"] for p in by_example["pool"]][:2] == mine and by_example["pool"][0]["pinned"]
+        s = client.post(f"/api/exhibitions/{xid}/theme", json={"key": key}).json()
         drop = s["pool"][-1]["photo_id"]
         s = client.put(f"/api/exhibitions/{xid}/pool", json={"excluded": [drop]}).json()
         assert drop not in [p["photo_id"] for p in s["pool"]]

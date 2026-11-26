@@ -308,7 +308,8 @@ NAME_SCHEMA = {
     "required": ["title", "pitch", "thread"],
     "additionalProperties": False,
 }
-KIND_ZH = {"look": "畫面風格相近", "place": "同一個地方", "idea": "同一個概念", "subject": "同一種題材", "custom": "你提出的主題"}
+KIND_ZH = {"look": "畫面風格相近", "place": "同一個地方", "idea": "同一個概念", "subject": "同一種題材", "custom": "你提出的主題",
+           "seeds": "從你預選的照片出發"}  # fmt: skip
 
 
 def _sheet(ctx: Ctx, ids: list[int], numbers: list[int], cols: int = 4, cell: int = 384) -> bytes:
@@ -362,11 +363,110 @@ def propose(ctx: Ctx, xid: int, use_model: bool = True, progress=lambda done, to
     return out
 
 
-def choose(ctx: Ctx, xid: int, key: str | None = None, text: str | None = None) -> dict:
-    """Settles the series: one of the proposals, or the user's own words matched against the library."""
+def seed_fit(mat: np.ndarray, seeds: np.ndarray) -> np.ndarray:
+    """How much each photo is like the ones the user chose.
+
+    A photo only has to resemble one of them, or two once there are several to choose from. A series can
+    hold more than one kind of picture, and the average of two different pictures resembles neither.
+    """
+    sims = mat @ seeds.T
+    k = 1 if sims.shape[1] <= 3 else 2
+    return np.sort(sims, axis=1)[:, -k:].mean(axis=1)
+
+
+SEED_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"}, "pitch": {"type": "string"}, "thread": {"type": "string"},
+        "probes": {"type": "array", "items": {"type": "object", "properties": {"zh": {"type": "string"}, "en": {"type": "string"}},
+                                              "required": ["zh", "en"], "additionalProperties": False}},
+    },
+    "required": ["title", "pitch", "thread", "probes"],
+    "additionalProperties": False,
+}  # fmt: skip
+
+
+def _read_seeds(ctx: Ctx, seeds: list[dict], spec: dict) -> dict:
+    """The on-device model looks at the chosen photos and says what they have in common, and what else would belong."""
+    show = seeds[:9]
+    cards = "\n".join(f"{i + 1}. {local_vlm.card(p)}" for i, p in enumerate(show))
+    user = (
+        f"一位攝影者要辦個展，展出 {spec['count']} 張作品。他先挑了下面這 {len(show)} 張，說「我想要的就是這種感覺」。"
+        f"總表上有編號，下面是每張的說明。\n{cards}\n\n"
+        "請找出這幾張的共同點，替這個系列定調：\n"
+        "- title：系列名稱，8 個字以內，要有畫面感，不要用「之美」「印象」這類套語\n"
+        "- pitch：一句話說這個系列想讓觀眾看到什麼\n"
+        "- thread：這幾張在視覺上是靠什麼串在一起的（色調、光線、構圖或題材），一句話\n"
+        "- probes：4～6 個「還有哪些畫面也屬於這個系列」的具體描述，用來從他的相片庫找出其他照片。"
+        "要涵蓋不同的可能，不要只是重述這幾張。zh 用繁體中文，en 用英文（像圖片說明那樣，例如 an empty wooden bridge over still water）"
+    )
+    d = local_vlm.LocalVLM(ctx.settings.local, role="judge").chat_json(
+        "你是一位攝影策展人。只輸出 JSON，用繁體中文。", user,
+        [_sheet(ctx, [p["id"] for p in show], list(range(1, len(show) + 1)), cols=3, cell=320)], SEED_SCHEMA, max_tokens=900)  # fmt: skip
+    probes = [{"zh": str(x.get("zh", "")).strip()[:80], "en": str(x.get("en", "")).strip()[:160]} for x in (d.get("probes") or [])[:6]
+              if isinstance(x, dict) and (str(x.get("zh", "")).strip() or str(x.get("en", "")).strip())]  # fmt: skip
+    return {"title": str(d.get("title", "")).strip()[:20], "pitch": str(d.get("pitch", "")).strip()[:160],
+            "thread": str(d.get("thread", "")).strip()[:160], "probes": probes}  # fmt: skip
+
+
+def from_seeds(ctx: Ctx, x: dict, seed_ids: list[int], use_model: bool = True) -> dict:
+    """A theme defined by example: the user's own few photos, and what else in the library belongs with them."""
+    spec = x["spec"]
+    want = list(dict.fromkeys(int(i) for i in seed_ids))[: spec["count"]]
+    _, ids, mat = ctx.vectors()
+    pos = {int(pid): i for i, pid in enumerate(ids)}
+    chosen = {p["id"]: p for p in mentor.load(ctx, f"p.id IN ({','.join('?' * len(want))})", tuple(want))} if want else {}
+    seeds = [i for i in want if i in chosen and i in pos]
+    if not seeds:
+        raise ValueError("請先選幾張已經分析過的照片。")
+    others = [p for p in eligible(ctx, spec) if p["id"] not in set(seeds) and p["id"] in pos]
+    named = {"title": "我預選的系列", "pitch": "", "thread": "", "probes": []}
+    by = None
+    if use_model:
+        try:
+            got = _read_seeds(ctx, [chosen[i] for i in seeds], spec)
+            if got["title"]:
+                named, by = got, ctx.settings.local.judge_model or ctx.settings.local.model
+        except local_vlm.LocalModelError:
+            pass  # not running: similarity alone still finds the rest
+    ranked: list[int] = []
+    if others:
+        om = mat[[pos[p["id"]] for p in others]]
+        look = seed_fit(om, mat[[pos[i] for i in seeds]])
+        span = float(look.max() - look.min()) or 1.0
+        fit = (look - look.min()) / span
+        words = contest.theme_scores(ctx, {"probes": named["probes"]}, om) if named["probes"] else None
+        if words is not None:  # looks like the chosen ones, and fits what they were said to be about
+            fit = 0.6 * fit + 0.4 * words[0] / 100.0
+        ranked = _rank(others, {p["id"]: float(f) for p, f in zip(others, fit)}, max(spec["pool"] - len(seeds), 0))
+    return {"key": "seeds", "kind": "seeds", "title": named["title"], "pitch": named["pitch"], "thread": named["thread"],
+            "probes": [p["zh"] or p["en"] for p in named["probes"]], "named_by": by, "seeds": seeds, "photo_ids": seeds + ranked}  # fmt: skip
+
+
+def choices(ctx: Ctx, xid: int, limit: int = 600) -> list[dict]:
+    """Photos the user can start a theme from: the ones they picked in the library first, then the best of what can be printed."""
+    x = get(ctx, xid)
+    rows = {p["id"]: p for p in eligible(ctx, x["spec"])}
+    for p in mentor.load(ctx, "p.flag='pick'"):  # a pick is offered even when it prints poorly, with that shown
+        if p["id"] not in rows:
+            p["print"] = print_info(p["width"], p["height"], p["recipe"], x["spec"])
+            p["q"] = _quality(p)
+            rows[p["id"]] = p
+    order = sorted(rows.values(), key=lambda p: (p.get("flag") != "pick", -(p.get("rating") or 0), -p["q"]))
+    return [{"photo_id": p["id"], "picked": p.get("flag") == "pick", "rating": p.get("rating") or 0, "q": round(p["q"]), "print": p["print"],
+             "caption": p.get("caption")} for p in order[:limit]]  # fmt: skip
+
+
+def choose(ctx: Ctx, xid: int, key: str | None = None, text: str | None = None, seeds: list[int] | None = None,
+           use_model: bool = True) -> dict:  # fmt: skip
+    """Settles the series: one of the proposals, the user's own words, or a few photos they chose as examples."""
     x = get(ctx, xid)
     spec = x["spec"]
-    if key:
+    pinned: list[int] = []
+    if seeds:
+        theme = from_seeds(ctx, x, seeds, use_model)
+        pinned = theme["seeds"]
+    elif key:
         idea = next((t for t in (x["themes"] or {}).get("ideas", []) if t["key"] == key), None)
         if idea is None:
             raise ValueError("找不到這個候選主題，請重新提案。")
@@ -386,7 +486,7 @@ def choose(ctx: Ctx, xid: int, key: str | None = None, text: str | None = None) 
         fit = {int(ids[i]): float(s) for i, s in zip(idx, got[0])}
         theme = {"key": "custom", "kind": "custom", "title": words[:20], "pitch": words[:200], "thread": "",
                  "photo_ids": _rank(rows, fit, spec["pool"])}  # fmt: skip
-    theme.update(excluded=[], pinned=[])
+    theme.update(excluded=[], pinned=pinned)
     _put(ctx, xid, theme=theme, curation=None)
     ctx.db.run("DELETE FROM exhibition_works WHERE exhibition_id=?", (xid,))
     return theme
@@ -462,6 +562,7 @@ def curator_schema() -> dict:
 def _request(ctx: Ctx, x: dict, cands: list[dict]) -> list:
     spec, t = x["spec"], x["theme"]
     n = min(spec["count"], len(cands))
+    mine = set(t.get("pinned") or []) & {p["id"] for p in cands}
     parts: list = [
         f"展覽名稱：{x['name']}\n攝影者選定的主軸：{t['title']}" + (f"（{t['pitch']}）" if t.get("pitch") and t["pitch"] != t["title"] else "")
         + f"\n展出 {n} 張作品，每張印成 {spec['frame_w']:g}×{spec['frame_h']:g} 公分。\n\n"
@@ -474,7 +575,9 @@ def _request(ctx: Ctx, x: dict, cands: list[dict]) -> list:
         "- sequence_note：一兩句話說明排序的邏輯（從哪裡開始、在哪裡轉折、怎麼收尾）\n"
         "- weak：選出的作品裡最弱的 1～3 張，說明弱在哪裡，讓攝影者知道哪幾張最該考慮更換\n"
         "- gaps：這個系列還缺什麼樣的照片（沒有就給空陣列）"
-    ]
+        + (f"\n\n標示「攝影者預選」的 {len(mine)} 張是他自己挑出來定義這個系列的。除非某一張明顯破壞系列或和另一張幾乎一樣，"
+           "否則請保留，並圍繞它們安排其他作品。" if mine else "")
+    ]  # fmt: skip
     for k in range(0, len(cands), SHEET):
         chunk = cands[k : k + SHEET]
         nums = list(range(k + 1, k + len(chunk) + 1))
@@ -483,7 +586,8 @@ def _request(ctx: Ctx, x: dict, cands: list[dict]) -> list:
         for no, p in zip(nums, chunk):
             pr = p["print"]
             soft = "，近看略軟" if pr["level"] == "soft" else ""
-            lines.append(f"{no}. {local_vlm.card(p)}｜{'直式' if pr['orientation'] == 'portrait' else '橫式'}｜{pr['dpi']} dpi{soft}｜地端評分 {p['q']:.0f}")
+            lines.append(f"{no}. {local_vlm.card(p)}｜{'直式' if pr['orientation'] == 'portrait' else '橫式'}｜{pr['dpi']} dpi{soft}｜地端評分 {p['q']:.0f}"
+                         + ("｜攝影者預選" if p["id"] in mine else ""))  # fmt: skip
         parts.append("\n".join(lines))
     return parts
 
@@ -1035,7 +1139,7 @@ def state(ctx: Ctx, xid: int) -> dict:
                                "filename", "print", "missing", "facts", "gear")} for w in ws]  # fmt: skip
     theme = None
     if x["theme"]:
-        theme = {k: x["theme"].get(k) for k in ("key", "kind", "title", "pitch", "thread", "excluded", "pinned")}
+        theme = {k: x["theme"].get(k) for k in ("key", "kind", "title", "pitch", "thread", "excluded", "pinned", "probes", "named_by")}
         theme["available"] = len(x["theme"].get("photo_ids", []))
     ideas = None
     if x["themes"]:
@@ -1045,7 +1149,8 @@ def state(ctx: Ctx, xid: int) -> dict:
         "id": x["id"], "name": x["name"], "spec": x["spec"], "tones": list(submission.TONES),
         "ideas": ideas,
         "theme": theme,
-        "pool": [{"photo_id": p["id"], "print": p["print"], "q": round(p["q"]), "caption": p.get("caption")} for p in cands],
+        "pool": [{"photo_id": p["id"], "print": p["print"], "q": round(p["q"]), "caption": p.get("caption"),
+                  "pinned": p["id"] in set((x["theme"] or {}).get("pinned") or [])} for p in cands],
         "curation": x["curation"],
         "works": [w for w in slim if w["role"] == "work"],
         "reserves": [w for w in slim if w["role"] == "reserve"],
