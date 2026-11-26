@@ -106,9 +106,12 @@ PARSE_SCHEMA = {
         "device": {"type": "string", "enum": ["any", "phone", "camera"]},
         "people": {"type": "string", "enum": ["any", "none"]},
         "judging": {"type": "string"},
+        "upload_long_edge": {"type": "integer"},
+        "upload_max_mb": {"type": "number"},
+        "description_max_chars": {"type": "integer"},
     },
     "required": ["name", "theme", "rules", "date_from", "date_to", "max_entries", "orientation", "min_long_edge",
-                 "device", "people", "judging"],
+                 "device", "people", "judging", "upload_long_edge", "upload_max_mb", "description_max_chars"],
     "additionalProperties": False,
 }  # fmt: skip
 
@@ -132,7 +135,9 @@ def parse_announcement(ctx: Ctx, text: str) -> dict:
         "- max_entries：每人最多投稿幾張\n- orientation：限定橫式 landscape、直式 portrait、正方形 square，沒限制選 any\n"
         "- min_long_edge：照片長邊至少幾個像素\n- device：限手機 phone、限相機 camera，沒限制選 any\n"
         "- people：若不可出現可辨識的人物選 none，否則 any\n"
-        "- judging：評分方式、評審是誰、各項比重，照簡章寫的摘要\n\n"
+        "- judging：評分方式、評審是誰、各項比重，照簡章寫的摘要\n"
+        "- upload_long_edge：初審或線上報名時上傳的檔案，長邊規定幾個像素\n"
+        "- upload_max_mb：上傳的每個檔案最大幾 MB\n- description_max_chars：作品說明的字數上限\n\n"
         f"簡章內容：\n{text[:6000]}"
     )
     d = _llm(ctx).chat_json(LLM_SYSTEM, user, None, PARSE_SCHEMA, max_tokens=900)
@@ -154,7 +159,19 @@ def parse_announcement(ctx: Ctx, text: str) -> dict:
         "judging": str(d.get("judging", "")).strip()[:300],
         "max_entries": entries,
         "constraints": {k: v for k, v in cons.items() if v},
+        "spec": {k: v for k, v in (("long_edge", _num(d.get("upload_long_edge"), 600, 12000)),
+                                   ("max_mb", _num(d.get("upload_max_mb"), 0.2, 200)),
+                                   ("desc_max", _num(d.get("description_max_chars"), 20, 2000))) if v},
     }
+
+
+def _num(v, lo: float, hi: float):
+    """A number from the model, or None when it is missing or implausible."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return (int(x) if x == int(x) else x) if lo <= x <= hi else None
 
 
 # ----------------------------------------------------------------- follow-ups
@@ -385,4 +402,5 @@ def to_contest(draft: dict, sizes: dict | None = None) -> dict:
             "disliked": [int(p) for p, v in labels.items() if v == "no"],
         },
         "insight": draft.get("insight") or "",
+        "spec": {k: v for k, v in (draft.get("spec") or {}).items() if v},
     }

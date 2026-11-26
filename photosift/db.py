@@ -92,6 +92,18 @@ CREATE TABLE IF NOT EXISTS contest_scores (
     PRIMARY KEY (contest_id, photo_id)
 );
 
+CREATE TABLE IF NOT EXISTS submissions (
+    contest_id INTEGER NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
+    photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0,
+    title TEXT, description TEXT,
+    questions TEXT,             -- json: [{q, options, a}] asked by the local model, answered by the user
+    use_edit INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',   -- draft | sent | passed | failed
+    updated_at REAL,
+    PRIMARY KEY (contest_id, photo_id)
+);
+
 CREATE TABLE IF NOT EXISTS edits (
     photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
     recipe TEXT,                -- json: the current edit, NULL when the photo is untouched
@@ -122,6 +134,7 @@ MIGRATIONS = {
         "taste": "REAL",                          # 0-100: how much it resembles what the user picks
     },
     "contest_scores": {"triage": "TEXT"},         # json: what the external model said on the contact sheet
+    "contests": {"submission": "TEXT"},           # json: packaging settings and a log of packages built
     "cloud_calls": {"photos": "INTEGER NOT NULL DEFAULT 0"},  # photos shown, counting each tile of a contact sheet
 }
 

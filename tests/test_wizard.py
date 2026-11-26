@@ -98,7 +98,7 @@ def test_wizard_end_to_end(client):
 
     assert client.post("/api/wizard/parse", json={"text": "太短"}).status_code == 400
     parsed = client.post("/api/wizard/parse", json={"text": "二〇二六年公司攝影比賽簡章：主題為旅途，每人限投三張……" * 3}).json()
-    assert set(parsed) == {"name", "theme", "rules", "judging", "max_entries", "constraints"}
+    assert set(parsed) == {"name", "theme", "rules", "judging", "max_entries", "constraints", "spec"}
 
     draft = {"name": "年度攝影比賽", "theme": "旅途中的寧靜時刻", "rules": "不可合成",
              "profile": {"judges": "主管或同事", "goal": "想得獎，投評審所好", "styles": ["寧靜、有餘韻"]},

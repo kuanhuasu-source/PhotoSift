@@ -4,7 +4,7 @@ import { PhotoViewer } from './library.js';
 
 const STEPS = ['比賽', '評審與目標', '規則', '追問', '用照片討論', '確認'];
 const LABEL = { yes: '符合', maybe: '普通', no: '不符合' };
-const EMPTY = { name: '', theme: '', rules: '', judging: '', max_entries: 0, profile: {}, constraints: {}, qa: [], scope: {}, labels: {}, insight: '' };
+const EMPTY = { name: '', theme: '', rules: '', judging: '', max_entries: 0, profile: {}, constraints: {}, qa: [], scope: {}, labels: {}, insight: '', spec: {} };
 
 function Choice({ q, value, onChange }) {
   const picked = q.multi ? (value || []) : value;
@@ -39,6 +39,7 @@ export function Wizard({ onClose, onCreated }) {
   const cloud = status ? status.cloud : {};
   const set = (patch) => setD((cur) => ({ ...cur, ...patch }));
   const setCons = (k, v) => setD((cur) => ({ ...cur, constraints: { ...cur.constraints, [k]: v } }));
+  const setSpec = (k, v) => setD((cur) => ({ ...cur, spec: { ...cur.spec, [k]: v } }));
   const draft = () => ({ ...d, sizes: sizes || undefined });
 
   useEffect(() => {
@@ -59,7 +60,7 @@ export function Wizard({ onClose, onCreated }) {
     try {
       const r = await api('/wizard/parse', { body: { text: paste } });
       set({ name: r.name || d.name, theme: r.theme || d.theme, rules: r.rules || d.rules, judging: r.judging, max_entries: r.max_entries || d.max_entries,
-        constraints: { ...d.constraints, ...r.constraints } });
+        constraints: { ...d.constraints, ...r.constraints }, spec: { ...d.spec, ...(r.spec || {}) } });
       setShowPaste(false);
       toast('已從簡章填入主題、規則和限制，請在接下來的步驟確認。');
     } catch (e) { fail(e); }
@@ -156,6 +157,13 @@ export function Wizard({ onClose, onCreated }) {
       </div>
       <div class="field"><span>其他規則（後製限制、授權等，會交給評審模型參考）</span>
         <textarea rows="3" value=${d.rules} onInput=${(e) => set({ rules: e.target.value })} placeholder="例如：可調整亮度與裁切，不得合成"></textarea></div>
+      <div><h3>初審要交的檔案</h3>
+        <p class="small muted" style="margin:2px 0 8px">選片完成後，打包初審檔和寫作品說明時會照這些規格。簡章沒寫的留空，到時候用預設值，也可以再改。</p>
+        <div class="row wrap top gap-l">
+          <div class="field" style="width:170px"><span>上傳檔的長邊像素</span><input type="number" min="0" step="100" value=${d.spec.long_edge || ''} placeholder="3000" onChange=${(e) => setSpec('long_edge', +e.target.value || 0)} /></div>
+          <div class="field" style="width:170px"><span>每個檔案上限（MB）</span><input type="number" min="0" step="0.5" value=${d.spec.max_mb || ''} placeholder="5" onChange=${(e) => setSpec('max_mb', +e.target.value || 0)} /></div>
+          <div class="field" style="width:170px"><span>作品說明字數上限</span><input type="number" min="0" step="10" value=${d.spec.desc_max || ''} placeholder="150" onChange=${(e) => setSpec('desc_max', +e.target.value || 0)} /></div>
+        </div></div>
       ${pv && html`<div class="note ${pv.after_rules ? 'local' : 'bad'}">相片庫有 ${n0(pv.library)} 張，符合這些規定的有 <b>${n0(pv.after_rules)}</b> 張${pv.after_rules ? `；去掉連拍重複和技術瑕疵後，有 ${n0(pv.eligible)} 張可以參加初選。` : '。沒有照片符合，請檢查日期或其他條件。'}
         ${(c.date_from || c.date_to) ? '沒有記錄拍攝時間的照片無法確認日期，所以不會被納入。' : ''}</div>`}
     </div>`,

@@ -80,7 +80,7 @@ def create(ctx: Ctx, name: str, theme: str, rules: str = "", notes: str = "", sc
     return cur.lastrowid
 
 
-BRIEF_EXTRA = ("constraints", "profile", "qa", "examples", "insight")
+BRIEF_EXTRA = ("constraints", "profile", "qa", "examples", "insight", "spec")  # spec: what a preliminary file must be
 
 
 def get(ctx: Ctx, cid: int) -> dict:

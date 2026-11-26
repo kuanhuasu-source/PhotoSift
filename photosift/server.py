@@ -15,7 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import cloud, config, contest, editing, export, grouping, imaging, local_vlm, pipeline, retouch, sun, taste, taxonomy, wizard
+from . import (cloud, config, contest, editing, export, grouping, imaging, local_vlm, pipeline, retouch, submission, sun,
+               taste, taxonomy, wizard)  # fmt: skip
 from .cloud import CloudError
 from .context import Ctx
 from .db import photo_dict
@@ -80,6 +81,7 @@ class ContestIn(BaseModel):
     qa: list = []
     examples: dict = {}
     insight: str = ""
+    spec: dict = {}
 
     def extra(self) -> dict:
         return {k: getattr(self, k) for k in contest.BRIEF_EXTRA}
@@ -102,6 +104,34 @@ class ExportIn(BaseModel):
 
 class RenameIn(BaseModel):
     title: str
+
+
+class SubmissionIn(BaseModel):
+    spec: dict | None = None
+    photo_ids: list[int] | None = None
+
+
+class EntryIn(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    use_edit: bool | None = None
+    status: str | None = None
+    questions: list | None = None
+
+
+class CopyIn(BaseModel):
+    only_empty: bool = False
+    use_cloud: bool = True
+
+
+class PackageIn(BaseModel):
+    kind: str
+    dest: str
+    zip: bool = False
+
+
+class RevealIn(BaseModel):
+    at: float
 
 
 class WizardIn(BaseModel):
@@ -450,21 +480,25 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
                 raise HTTPException(404)
         return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
+    def _show_in_file_manager(path: str) -> None:
+        """Highlights a file, or opens a folder, in Finder / Explorer."""
+        folder = Path(path).is_dir()
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", path] if folder else ["open", "-R", path])
+            elif sys.platform == "win32":
+                subprocess.Popen(["explorer", os.path.normpath(path)] if folder else ["explorer", "/select,", os.path.normpath(path)])
+            else:
+                subprocess.Popen(["xdg-open", path if folder else str(Path(path).parent)])
+        except OSError:
+            raise HTTPException(500, f"無法開啟檔案管理員。位置：{path}")
+
     @app.post("/api/reveal/{pid}")
     def reveal(pid: int):
         r = ctx.db.one("SELECT path FROM photos WHERE id=?", (pid,))
         if r is None or not Path(r["path"]).exists():
             raise HTTPException(404, "原始檔已不在原本的位置")
-        path = r["path"]
-        try:
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", path])
-            elif sys.platform == "win32":
-                subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-            else:
-                subprocess.Popen(["xdg-open", str(Path(path).parent)])
-        except OSError:
-            raise HTTPException(500, f"無法開啟檔案管理員。檔案位置：{path}")
+        _show_in_file_manager(r["path"])
         return {"ok": True}
 
     # ---------------------------------------------------------------- editing
@@ -494,7 +528,7 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         """Live preview of any recipe, saved or not."""
         _photo_or_404(pid)
         try:
-            recipe = json.loads(r)
+            recipe = retouch.load(ctx, pid)["recipe"] or {} if r == "saved" else json.loads(r)
         except json.JSONDecodeError:
             raise HTTPException(400, "調整參數格式不正確")
         try:
@@ -698,6 +732,66 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         if not body.photo_ids:
             raise HTTPException(400, "沒有選取照片")
         return export.copy_photos(ctx, body.photo_ids, body.dest, body.include_raw)
+
+    # ----------------------------------------------------------- submission
+
+    @app.get("/api/contests/{cid}/submission")
+    def get_submission(cid: int, seed: int = 1):
+        """seed=0 only looks; otherwise the first visit starts the list from the jury's picks."""
+        _contest(cid)
+        return submission.state(ctx, cid, bool(seed))
+
+    @app.post("/api/contests/{cid}/submission/reveal")
+    def reveal_package(cid: int, body: RevealIn):
+        """Opens a package built earlier. Only folders this contest's own log recorded can be opened."""
+        _contest(cid)
+        folder = submission.package_folder(ctx, cid, body.at)
+        if folder is None:
+            raise HTTPException(404, "這個資料夾已經不在原本的位置")
+        _show_in_file_manager(str(folder))
+        return {"ok": True}
+
+    @app.put("/api/contests/{cid}/submission")
+    def put_submission(cid: int, body: SubmissionIn):
+        _contest(cid)
+        if body.photo_ids is not None:
+            submission.set_entries(ctx, cid, body.photo_ids)
+        if body.spec is not None:
+            submission.set_spec(ctx, cid, body.spec)
+        return submission.state(ctx, cid)
+
+    @app.patch("/api/contests/{cid}/submission/{pid}")
+    def patch_entry(cid: int, pid: int, body: EntryIn):
+        _contest(cid)
+        submission.update_entry(ctx, cid, pid, body.model_dump(exclude_none=True))
+        return submission.state(ctx, cid)
+
+    @app.post("/api/contests/{cid}/submission/{pid}/questions")
+    def entry_questions(cid: int, pid: int):
+        """The on-device model looks at the photo and asks what only the photographer knows."""
+        _contest(cid)
+        return {"questions": submission.ask_background(ctx, cid, pid)}
+
+    @app.post("/api/contests/{cid}/submission/copy")
+    def entry_copy(cid: int, body: CopyIn):
+        """Drafts the descriptions from text alone. No photo is uploaded."""
+        _contest(cid)
+        out = submission.write_copy(ctx, cid, body.only_empty, body.use_cloud)
+        return {**out, **submission.state(ctx, cid)}
+
+    @app.post("/api/contests/{cid}/submission/package")
+    def entry_package(cid: int, body: PackageIn):
+        _contest(cid)
+        if body.kind not in ("prelim", "full"):
+            raise HTTPException(400, "不支援的打包方式")
+
+        def run(job):
+            job.stage = "製作初審包" if body.kind == "prelim" else "打包完整檔"
+            if body.kind == "prelim":
+                return submission.build_prelim(ctx, cid, body.dest, job.progress)
+            return submission.build_full(ctx, cid, body.dest, body.zip, job.progress)
+
+        return jobs.submit("package", "打包投稿檔案", run).to_dict()
 
     # ----------------------------------------------------- contest wizard
 

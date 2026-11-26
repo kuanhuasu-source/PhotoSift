@@ -21,6 +21,12 @@ function jobSummary(j) {
   if (j.kind === 'contest_local') return `地端評審完成：${r.scored} 張` + (r.agreement != null ? `，與外部評審的一致度 ${r.agreement}` : '') + '。';
   if (j.kind === 'contest_calibrate') return `校準完成：地端與外部評審的一致度 ${r.agreement_before ?? '—'}。`;
   if (j.kind === 'contest_finals') return '決選完成。';
+  if (j.kind === 'package') {
+    const mb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`);
+    return r.kind === 'prelim'
+      ? `初審包完成：${r.count} 件作品共 ${mb(r.bytes)}（原始檔合計 ${mb(r.original_bytes)}）。原始檔沒有變動。`
+      : `完整包完成：${r.count} 件作品共 ${mb(r.bytes)}${r.zip ? '，已另外打包成 zip' : ''}。原始檔沒有變動。`;
+  }
   return '完成。';
 }
 

@@ -1,6 +1,7 @@
 import { html, useState, useEffect, useCallback, api, fail, toast, useApp, Icon, Dialog, Bars, usePickFolder, n0, thumb } from './ui.js';
 import { PhotoViewer } from './library.js';
 import { Wizard } from './wizard.js';
+import { Submission } from './submission.js';
 
 const BLANK = { name: '', theme: '', rules: '', notes: '', scope: {}, sizes: { pool: 150, calibration: 16, triage: 48, finals: 12, picks: 5 }, exclude_flawed: true, max_per_event: 0 };
 
@@ -121,12 +122,15 @@ function Contest({ id, onEdit, onDeleted }) {
   const [confirm, setConfirm] = useState(null);
   const [view, setView] = useState(null);
   const [showAll, setShowAll] = useState(false);
+  const [sub, setSub] = useState(null);             // the submission list, once there is something to enter
   const [pickFolder, folderDlg] = usePickFolder();
 
   const load = useCallback(async () => {
     try {
       const [cc, rr] = await Promise.all([api('/contests/' + id), api(`/contests/${id}/results`)]);
       setC(cc); setResults(rr);
+      // The jury's picks start the list. Before the finals nothing is added unless the user asks.
+      setSub(cc.scored_local > 0 ? await api(`/contests/${id}/submission?seed=${cc.summary ? 1 : 0}`) : null);
     } catch (e) { fail(e); }
   }, [id]);
   useEffect(() => { load(); }, [id, jobTick]);
@@ -156,6 +160,11 @@ function Contest({ id, onEdit, onDeleted }) {
       const r = await api(`/contests/${id}/export`, { body: { dest } });
       toast(`已複製 ${r.copied} 張${r.edited ? `、${r.edited} 張修圖後的版本` : ''}與評審報告到 ${r.dest}（原始檔沒有變動）`);
     } catch (e) { fail(e); }
+  };
+  const entered = new Set(sub ? sub.entries.map((e) => e.photo_id) : []);
+  const toggleEntry = (pid) => {
+    const next = entered.has(pid) ? [...entered].filter((x) => x !== pid) : [...entered, pid];
+    api(`/contests/${id}/submission`, { method: 'PUT', body: { photo_ids: next } }).then(setSub).catch(fail);
   };
   const remove = async () => {
     if (!window.confirm(`刪除比賽「${c.name}」和它的所有評分？照片不受影響。`)) return;
@@ -247,14 +256,18 @@ function Contest({ id, onEdit, onDeleted }) {
         <${Icon} name="cloud" size=${14} /> ${c.summary ? '重新決選' : '選出入圍'}</button>`}>
       ${c.summary && c.summary.overall && html`<div class="note"><b>總評與投稿建議</b><br />${c.summary.overall}</div>`}
       ${c.summary && html`<div class="row"><button class="btn" onClick=${exportOut}><${Icon} name="out" size=${14} /> 匯出入圍照片與評審報告</button>
-        <span class="small muted">複製到你指定的資料夾，檔名依名次編號。修過圖的照片會多匯出一份修圖後的版本。原始檔不會變動。</span></div>`}
+        <span class="small muted">給自己留存用：所有入圍照片的原始檔和評審的完整評語。要交給主辦單位的檔案請用下一步的「投稿」。</span></div>`}
     <//>
+
+    ${sub && html`<${Submission} cid=${id} c=${c} sub=${sub} setSub=${setSub}
+      onOpen=${(ids, index) => setView({ ids, index })} onEdit=${(ids, index) => setView({ ids, index, mode: 'edit' })} />`}
 
     ${results.length > 0 && html`<div class="card" style="margin-top:14px">
       <div class="row"><h2 class="grow">${c.summary ? '名次' : '目前的排名'}</h2>
         <span class="small muted">${n0(results.length)} 張已評</span></div>
       ${c.summary && c.summary.ranking.length > 0 && html`<p class="small muted">前 ${c.summary.ranking.length} 名的順序來自並排比較，所以不一定和各自的分數高低相同；其餘依個別分數排列。</p>`}
       ${shown.map((r, i) => html`<${Result} key=${r.photo_id} r=${r} i=${i} names=${names} pick=${picks.has(r.photo_id)} why=${why[r.photo_id]}
+        entered=${entered.has(r.photo_id)} onToggle=${sub ? () => toggleEntry(r.photo_id) : null}
         onOpen=${() => setView({ ids: shown.map((x) => x.photo_id), index: i })}
         onEdit=${() => setView({ ids: shown.map((x) => x.photo_id), index: i, mode: 'edit' })} />`)}
       ${results.length > shown.length && html`<div style="text-align:center;padding-top:12px"><button class="btn" onClick=${() => setShowAll(true)}>顯示全部 ${results.length} 張</button></div>`}
@@ -275,12 +288,12 @@ const agreeText = (v) => (v == null ? '樣本太少，無法判斷'
   : v >= 0.4 ? '只有部分一致，建議依提醒重新評分'
   : '兩邊看法差很多，建議換一個地端評審模型，或加大決選張數');
 
-function Result({ r, i, names, pick, why, onOpen, onEdit }) {
+function Result({ r, i, names, pick, why, entered, onToggle, onOpen, onEdit }) {
   const f = r.final;
   const scores = (f || r.teacher || r.local || {}).scores || {};
   const kind = f || r.teacher ? '' : 'local';
   return html`<div class="result ${pick ? 'pick' : ''}">
-    <div class="rank">${r.final_rank || i + 1}${pick ? html`<div class="chip cloud" style="margin-top:6px">投稿</div>` : ''}</div>
+    <div class="rank">${r.final_rank || i + 1}${pick ? html`<div class="chip cloud" style="margin-top:6px" title="評審建議投稿這一張">推薦</div>` : ''}</div>
     <img loading="lazy" src=${thumb(r.photo_id)} alt="" onClick=${onOpen} />
     <div class="stack gap-s">
       <div class="row wrap"><span class="ttl">${f && f.title ? f.title : r.filename}</span>${f && f.title ? html`<span class="small faint">${r.filename}</span>` : ''}</div>
@@ -294,7 +307,9 @@ function Result({ r, i, names, pick, why, onOpen, onEdit }) {
       ${r.local && r.local.probe && html`<p class="small faint">因為符合「${r.local.probe}」而成為候選${r.triage && !r.triage.picked ? '；外部模型看過縮圖，沒有選進決選' : ''}</p>`}
       ${f && html`<p class="small"><b>優點</b>　${f.strengths}</p><p class="small muted"><b>可能扣分</b>　${f.weaknesses}</p>
         ${f.edit && f.edit !== '不需調整' ? html`<p class="small muted"><b>後製方向</b>　${f.edit}</p>` : ''}`}
-      <div class="row gap-s"><button class="btn sm" onClick=${onEdit}><${Icon} name="edit" size=${13} /> ${r.edited ? '繼續後製' : '後製'}</button>
+      <div class="row gap-s wrap">
+        ${onToggle && html`<button class="btn sm ${entered ? 'on' : ''}" onClick=${onToggle}>${entered ? html`<${Icon} name="check" size=${13} /> 已在投稿名單` : '加入投稿'}</button>`}
+        <button class="btn sm" onClick=${onEdit}><${Icon} name="edit" size=${13} /> ${r.edited ? '繼續後製' : '後製'}</button>
         ${r.edited ? html`<span class="chip local">已修圖，匯出時會多一份修圖後的版本</span>` : f ? html`<span class="small faint">外部評審的調整建議已經準備好，開啟後按「套用」</span>` : ''}</div>
       ${!f && r.teacher && html`<p class="small">${r.teacher.comment}</p>`}
       ${!f && r.local && html`<p class="small muted">${r.local.reason}</p>`}

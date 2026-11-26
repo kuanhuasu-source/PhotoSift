@@ -114,6 +114,11 @@ class FakeVLM:
         if images:
             im = Image.open(io.BytesIO(images[0])).convert("L").resize((8, 8))
             level = int(np.clip(round(np.asarray(im).mean() / 255 * 9) + 1, 1, 10))
+        if "entries" in props:  # writing descriptions without the external model
+            import re
+
+            nums = [int(n) for n in re.findall(r"^作品編號 (\d+)", user, flags=re.M)]
+            return {"entries": [{"id": n, "title": f"地端名稱{n}", "description": f"地端寫的說明 {n}"} for n in nums]}
         if "verdict" in props:  # reviewing its own edit: ask for a little less once, then accept
             self.reviews = getattr(self, "reviews", 0) + 1
             first = self.reviews % 2 == 1
@@ -195,6 +200,13 @@ class FakeProvider:
             want = int(re.search(r"最多 (\d+) 張", text).group(1))
             shown = len(re.findall(r"^\d+\. ", text, flags=re.M))
             data = {"picks": [{"no": k, "why": f"值得看 {k}"} for k in range(1, min(want, shown) + 1)]}
+        elif "entries" in props:  # written entry: one description per work number
+            import re
+
+            text = "\n".join(p for p in parts if isinstance(p, str))
+            limit = int(re.search(r"(\d+) 個字以內", text).group(1))
+            nums = [int(n) for n in re.findall(r"^作品編號 (\d+)", text, flags=re.M)]
+            data = {"entries": [{"id": n, "title": f"名稱{n}", "description": (f"這是作品 {n} 的說明。" * 30)[: limit - 1]} for n in nums]}
         elif "notes" in props:
             data = {"notes": "請把技術分數打嚴一點", "observations": ["技術分數偏高"]}
         elif "verdict" in props:
@@ -211,11 +223,12 @@ class FakeProvider:
 
 @pytest.fixture
 def fakes(monkeypatch):
-    from photosift import contest, local_vlm, retouch
+    from photosift import contest, local_vlm, retouch, submission
 
     vlm = FakeVLM()
     prov = FakeProvider()
     monkeypatch.setattr(local_vlm, "LocalVLM", lambda *a, **k: vlm)
     monkeypatch.setattr(contest, "get_provider", lambda *a, **k: prov)
     monkeypatch.setattr(retouch, "get_provider", lambda *a, **k: prov)
+    monkeypatch.setattr(submission, "get_provider", lambda *a, **k: prov)
     return vlm, prov

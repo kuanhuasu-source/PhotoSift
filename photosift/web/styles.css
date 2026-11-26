@@ -306,3 +306,31 @@ tr:last-child td { border-bottom: 0; }
 .plan ol { margin: 6px 0 0; padding-left: 20px; }
 .plan li { margin: 3px 0; }
 @media (max-width: 1000px) { .wphotos { grid-template-columns: repeat(2, 1fr); } .wizard { grid-template-columns: 1fr; } .wrail { display: none; } }
+
+/* --------------------------------------------------------- submission */
+.entry { display: grid; grid-template-columns: 40px 250px 1fr; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); align-items: start; }
+.entry:first-child { padding-top: 4px; }
+.entry > .no { font-size: 26px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; text-align: center; line-height: 1.1; }
+.entry img { width: 100%; aspect-ratio: 3/2; object-fit: cover; border-radius: 6px; cursor: zoom-in; display: block; background: var(--panel-2); }
+.entry input.ttl { font-size: 15px; font-weight: 650; height: 34px; }
+.entry .facts { grid-template-columns: 64px 1fr; color: var(--muted); }
+.entry .seg { flex: none; }
+.bgq { background: var(--panel-2); border-left: 3px solid var(--local); border-radius: 0 7px 7px 0; padding: 10px 14px; display: flex; flex-direction: column; gap: 12px; }
+.bgq input { max-width: 520px; }
+.count { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.count.over { color: var(--bad); font-weight: 650; }
+.subbox { border-top: 1px solid var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.checks { list-style: none; margin: 0; padding: 12px 14px; background: var(--panel-2); border-radius: 7px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.checks li { display: flex; gap: 9px; align-items: baseline; }
+.checks li b { width: 14px; text-align: center; flex: none; }
+.checks .ok b { color: var(--good); } .checks .warn b { color: var(--accent); } .checks .error b { color: var(--bad); }
+.checks .error span { color: var(--text); } .checks .warn span, .checks .ok span { color: var(--muted); }
+.pkgs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.pkg { background: var(--panel-2); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.pkg h3 { color: var(--text); }
+.pkgrow { padding: 5px 0; gap: 12px; }
+@media (max-width: 1000px) {
+  .entry { grid-template-columns: 34px 1fr; }
+  .entry > :nth-child(3) { grid-column: 2; }
+  .pkgs { grid-template-columns: 1fr; }
+}
