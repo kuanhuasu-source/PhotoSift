@@ -166,6 +166,40 @@ def _clean(s) -> str | None:
     return s or None
 
 
+PROGRAMS = {1: "manual", 2: "program", 3: "aperture", 4: "shutter", 5: "auto", 6: "auto", 7: "auto", 8: "auto"}
+METERING = {1: "average", 2: "center", 3: "spot", 4: "spot", 5: "matrix", 6: "partial"}
+
+
+def _int(v) -> int | None:
+    if isinstance(v, (tuple, list)):
+        v = v[0] if v else None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _shooting(program, mode, bias, metering, flash, wb, focal35, heading, exposure_time) -> dict:
+    """How the picture was taken, beyond the exposure triangle. Shared by both EXIF readers."""
+    prog = PROGRAMS.get(_int(program))
+    if prog is None and _int(mode) is not None:  # no program recorded: ExposureMode still tells auto from manual
+        prog = "manual" if _int(mode) == 1 else "auto"
+    t = _f(exposure_time)
+    f35 = _f(focal35)
+    b = _f(bias)
+    h = _f(heading)
+    return {
+        "shutter_s": t if t and t > 0 else None,
+        "focal35": f35 if f35 and f35 > 0 else None,
+        "exp_program": prog,
+        "exp_bias": round(b, 2) if b is not None and abs(b) <= 6 else None,
+        "metering": METERING.get(_int(metering)),
+        "flash": None if _int(flash) is None else _int(flash) & 1,
+        "wb": None if _int(wb) is None else ("manual" if _int(wb) == 1 else "auto"),
+        "heading": round(h % 360, 1) if h is not None else None,
+    }
+
+
 def _exif_pillow(path: Path) -> dict:
     with Image.open(path) as im:
         ex = im.getexif()
@@ -189,7 +223,9 @@ def _exif_pillow(path: Path) -> dict:
         "lat": _dms(gps.get(2), gps.get(1)) if gps.get(2) else None,
         "lon": _dms(gps.get(4), gps.get(3)) if gps.get(4) else None,
         "tz_offset": _tz(sub.get(0x9011) or sub.get(0x9010)),
-    }
+        **_shooting(sub.get(0x8822), sub.get(0xA402), sub.get(0x9204), sub.get(0x9207), sub.get(0x9209),
+                    sub.get(0xA403), sub.get(0xA405), gps.get(17), sub.get(0x829A)),
+    }  # fmt: skip
 
 
 def _tz(s) -> int | None:
@@ -238,7 +274,10 @@ def _exif_exifread(path: Path) -> dict:
         "lat": dms("GPS GPSLatitude", "GPS GPSLatitudeRef"),
         "lon": dms("GPS GPSLongitude", "GPS GPSLongitudeRef"),
         "tz_offset": _tz(val("EXIF OffsetTimeOriginal") or val("EXIF OffsetTime")),
-    }
+        **_shooting(first("EXIF ExposureProgram"), first("EXIF ExposureMode"), first("EXIF ExposureBiasValue"),
+                    first("EXIF MeteringMode"), first("EXIF Flash"), first("EXIF WhiteBalance"),
+                    first("EXIF FocalLengthIn35mmFilm"), first("GPS GPSImgDirection"), first("EXIF ExposureTime")),
+    }  # fmt: skip
 
 
 def read_meta(path: Path) -> dict:

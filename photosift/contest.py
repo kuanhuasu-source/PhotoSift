@@ -24,6 +24,7 @@ import numpy as np
 from . import local_vlm, taxonomy
 from .cloud import CloudError, CloudResult, Img, estimate_image_tokens, get_provider
 from .context import Ctx
+from .shooting import PHONE_MAKERS
 
 Progress = Callable[[int, int, str], None]
 Cancelled = Callable[[], bool]
@@ -33,7 +34,6 @@ TEACHER_BATCH = 8
 FINAL_BATCH = 6
 JURY_SIZE = 8
 SHEET_TILES = 16
-PHONE_MAKERS = ("apple", "iphone", "samsung", "google", "pixel", "xiaomi", "huawei", "oppo", "vivo", "oneplus", "realme", "zenfone")
 
 # Used when no external model is configured, so the app still works fully offline.
 DEFAULT_RUBRIC = {

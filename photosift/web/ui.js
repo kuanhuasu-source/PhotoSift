@@ -80,6 +80,7 @@ const P = {
   out: 'M12 3v12M7 8l5-5 5 5M4 15v5h16v-5',
   trash: 'M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13',
   sift: 'M3 5h18l-7 8v6l-4 2v-8L3 5z',
+  cap: 'M2 9l10-5 10 5-10 5-10-5zM6 11.2V16c0 1.6 2.8 3 6 3s6-1.4 6-3v-4.8M22 9v6',
 };
 export function Icon({ name, size = 16 }) {
   return html`<svg width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d=${P[name]} /></svg>`;

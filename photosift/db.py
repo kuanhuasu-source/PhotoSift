@@ -111,6 +111,45 @@ CREATE TABLE IF NOT EXISTS edits (
     updated_at REAL
 );
 
+-- Mentor mode: advice on how to take the next picture better.
+CREATE TABLE IF NOT EXISTS coach (
+    photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+    advice TEXT,                -- json from the on-device model: what to do differently in front of this scene
+    pair TEXT,                  -- json: why another frame of the same scene came out better
+    model TEXT,
+    updated_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY,
+    scope TEXT NOT NULL,        -- event | library
+    scope_id INTEGER,           -- the event, or NULL for the whole library
+    stats TEXT NOT NULL,        -- json: what was measured, with no model involved
+    review TEXT,                -- json: the mentor's reading of it
+    photo_ids TEXT,             -- json: the photos shown on the contact sheet, in sheet order
+    provider TEXT, model TEXT,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS exercises (
+    id INTEGER PRIMARY KEY,
+    review_id INTEGER REFERENCES reviews(id) ON DELETE SET NULL,
+    title TEXT NOT NULL, how TEXT, why TEXT,
+    metric TEXT NOT NULL,       -- which measurement shows progress, or 'manual'
+    baseline REAL, baseline_n INTEGER,
+    since_ts REAL NOT NULL,     -- photos taken after this moment count towards it (same clock as photos.taken_ts)
+    status TEXT NOT NULL DEFAULT 'open',    -- open | done | dropped
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS plans (
+    id INTEGER PRIMARY KEY,
+    created_at REAL NOT NULL,
+    place TEXT, lat REAL, lon REAL,
+    day TEXT NOT NULL,          -- YYYY-MM-DD at the place
+    data TEXT NOT NULL          -- json: light timetable, starting settings, shot list, reminders
+);
+
 CREATE TABLE IF NOT EXISTS cloud_calls (
     id INTEGER PRIMARY KEY,
     ts REAL NOT NULL,
@@ -132,6 +171,14 @@ MIGRATIONS = {
         "light": "TEXT",                          # night | blue | golden | day
         "meta_v": "INTEGER NOT NULL DEFAULT 0",   # which version of the EXIF reader filled this row
         "taste": "REAL",                          # 0-100: how much it resembles what the user picks
+        # how the picture was taken, for shooting advice
+        "shutter_s": "REAL",                      # exposure time in seconds
+        "focal35": "REAL",                        # 35 mm equivalent focal length, when the camera recorded it
+        "exp_program": "TEXT",                    # manual | aperture | shutter | program | auto
+        "exp_bias": "REAL",                       # exposure compensation in EV
+        "metering": "TEXT", "flash": "INTEGER", "wb": "TEXT",
+        "heading": "REAL",                        # compass direction the camera pointed, degrees from north
+        "tilt": "REAL",                           # measured lean of the horizon in degrees; NULL until measured
     },
     "contest_scores": {"triage": "TEXT"},         # json: what the external model said on the contact sheet
     "contests": {"submission": "TEXT"},           # json: packaging settings and a log of packages built

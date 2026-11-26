@@ -18,7 +18,7 @@ os.environ["PHOTOSIFT_EMBEDDER"] = "fake"
 
 
 def make_photo(path: Path, seed: int, when: datetime | None = None, gps=None, blur: float = 0, size=(900, 600),
-               brightness: float = 1.0, variant: int = 0) -> None:  # fmt: skip
+               brightness: float = 1.0, variant: int = 0, shot: dict | None = None) -> None:  # fmt: skip
     """A textured image that is unique per seed. `variant` gives a near-identical burst frame."""
     rng = np.random.default_rng(seed)
     w, h = size
@@ -38,11 +38,30 @@ def make_photo(path: Path, seed: int, when: datetime | None = None, gps=None, bl
         sub = ex.get_ifd(0x8769)
         sub[0x9003] = when.strftime("%Y:%m:%d %H:%M:%S")
         sub[0x829D], sub[0x829A], sub[0x8827] = R(28, 10), R(1, 125), 400
+    shot = shot or {}
+    if shot:  # how it was taken: aperture, shutter (num, den), iso, focal, focal35, program, bias, tz, lens, camera
+        sub = ex.get_ifd(0x8769)
+        if "camera" in shot:
+            ex[0x010F], ex[0x0110] = shot["camera"]
+        if "aperture" in shot:
+            sub[0x829D] = R(int(shot["aperture"] * 10), 10)
+        if "shutter" in shot:
+            sub[0x829A] = R(*shot["shutter"])
+        for key, tag in (("iso", 0x8827), ("program", 0x8822), ("metering", 0x9207), ("flash", 0x9209), ("focal35", 0xA405),
+                         ("lens", 0xA434), ("tz", 0x9011)):  # fmt: skip
+            if key in shot:
+                sub[tag] = shot[key]
+        if "focal" in shot:
+            sub[0x920A] = R(int(shot["focal"]), 1)
+        if "bias" in shot:
+            sub[0x9204] = R(int(round(shot["bias"] * 10)), 10)
     if gps:
         g = ex.get_ifd(0x8825)
         lat, lon = gps
         g[1], g[2] = ("N" if lat >= 0 else "S"), (R(int(abs(lat)), 1), R(int(abs(lat) % 1 * 60), 1), R(0, 1))
         g[3], g[4] = ("E" if lon >= 0 else "W"), (R(int(abs(lon)), 1), R(int(abs(lon) % 1 * 60), 1), R(0, 1))
+        if "heading" in shot:
+            g[16], g[17] = "T", R(int(shot["heading"]), 1)
     path.parent.mkdir(parents=True, exist_ok=True)
     im.save(path, "JPEG", quality=92, exif=ex.tobytes())
 
@@ -207,6 +226,20 @@ class FakeProvider:
             limit = int(re.search(r"(\d+) 個字以內", text).group(1))
             nums = [int(n) for n in re.findall(r"^作品編號 (\d+)", text, flags=re.M)]
             data = {"entries": [{"id": n, "title": f"名稱{n}", "description": (f"這是作品 {n} 的說明。" * 30)[: limit - 1]} for n in nums]}
+        elif "headline" in props:  # mentor review: refers to photos by their number on the sheet
+            import re
+
+            text = "\n".join(p for p in parts if isinstance(p, str))
+            shown = [int(n) for n in re.findall(r"^(\d+)\. ", text, flags=re.M)]
+            data = {
+                "headline": "構圖穩定，但常在正午拍",
+                "strengths": [{"title": "主體明確", "evidence": f"第 {shown[0]} 張"}],
+                "problems": [{"title": "快門太慢", "evidence": "模糊比例偏高", "fix": "把快門加快到安全快門", "photos": [shown[-1], 999]}],
+                "next_time": ["黃金時刻再來", "帶腳架"],
+                "photo_notes": [{"no": shown[0], "note": "這張最好"}, {"no": 999, "note": "不存在的編號"}],
+                "exercises": [{"title": "練習穩定持機", "how": "同一個畫面連拍三張", "why": "模糊太多", "metric": "blur_rate"},
+                              {"title": "寫拍攝筆記", "how": "每次拍完寫三行", "why": "養成習慣", "metric": "不存在的量測"}],
+            }
         elif "notes" in props:
             data = {"notes": "請把技術分數打嚴一點", "observations": ["技術分數偏高"]}
         elif "verdict" in props:
@@ -223,7 +256,7 @@ class FakeProvider:
 
 @pytest.fixture
 def fakes(monkeypatch):
-    from photosift import contest, local_vlm, retouch, submission
+    from photosift import contest, local_vlm, mentor, retouch, submission
 
     vlm = FakeVLM()
     prov = FakeProvider()
@@ -231,4 +264,5 @@ def fakes(monkeypatch):
     monkeypatch.setattr(contest, "get_provider", lambda *a, **k: prov)
     monkeypatch.setattr(retouch, "get_provider", lambda *a, **k: prov)
     monkeypatch.setattr(submission, "get_provider", lambda *a, **k: prov)
+    monkeypatch.setattr(mentor, "get_provider", lambda *a, **k: prov)
     return vlm, prov

@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (cloud, config, contest, editing, export, grouping, imaging, local_vlm, pipeline, retouch, submission, sun,
-               taste, taxonomy, wizard)  # fmt: skip
+from . import (cloud, config, contest, editing, export, grouping, imaging, local_vlm, mentor, pipeline, retouch, shootplan,
+               submission, sun, taste, taxonomy, wizard)  # fmt: skip
 from .cloud import CloudError
 from .context import Ctx
 from .db import photo_dict
@@ -132,6 +132,37 @@ class PackageIn(BaseModel):
 
 class RevealIn(BaseModel):
     at: float
+
+
+class ReviewIn(BaseModel):
+    scope: str
+    id: int | None = None
+    mode: str = "cloud"     # cloud | local | stats
+
+
+class PairIn(BaseModel):
+    better: int
+    worse: int
+
+
+class StatusIn(BaseModel):
+    status: str
+
+
+class PlanIn(BaseModel):
+    lat: float
+    lon: float
+    place: str = ""
+    day: str
+    genre: str
+    subject: str = ""
+    camera: str = ""
+    lens: str = ""
+    use_model: bool = True
+
+
+class DestIn(BaseModel):
+    dest: str
 
 
 class WizardIn(BaseModel):
@@ -792,6 +823,130 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             return submission.build_full(ctx, cid, body.dest, body.zip, job.progress)
 
         return jobs.submit("package", "打包投稿檔案", run).to_dict()
+
+    # ---------------------------------------------------------- mentor mode
+
+    def _scope(scope: str, sid: int | None) -> tuple[str, int | None]:
+        if scope not in ("event", "library") or (scope == "event" and sid is None):
+            raise HTTPException(400, "不支援的檢討範圍")
+        return scope, (sid if scope == "event" else None)
+
+    @app.get("/api/mentor/photo/{pid}")
+    def mentor_photo(pid: int):
+        """Settings, measured findings and the day's light for one photo. No model is called."""
+        try:
+            return mentor.photo(ctx, pid)
+        except KeyError:
+            raise HTTPException(404, "找不到這張照片")
+
+    @app.post("/api/mentor/photo/{pid}/advise")
+    def mentor_advise(pid: int):
+        """The on-device model says what to do in front of the same scene next time. No tokens."""
+        try:
+            return {"advice": mentor.advise(ctx, pid), "model": local_vlm.LocalVLM(ctx.settings.local, role="judge").model}
+        except KeyError:
+            raise HTTPException(404, "找不到這張照片")
+
+    @app.post("/api/mentor/pair")
+    def mentor_pair(body: PairIn):
+        try:
+            return mentor.explain_pair(ctx, body.better, body.worse)
+        except KeyError:
+            raise HTTPException(404, "找不到這兩張照片")
+
+    @app.get("/api/mentor/overview")
+    def mentor_overview():
+        reviews = {(r["scope"], r["scope_id"]): r for r in ctx.db.all(
+            "SELECT scope, scope_id, created_at, provider, review FROM reviews ORDER BY id")}  # fmt: skip
+
+        def brief(key):
+            r = reviews.get(key)
+            if r is None:
+                return None
+            text = json.loads(r["review"]) if r["review"] else None
+            return {"created_at": r["created_at"], "provider": r["provider"], "headline": text["headline"] if text else None}
+
+        events = [{**dict(e), "review": brief(("event", e["id"]))} for e in ctx.db.all(
+            "SELECT id, title, place, start_ts, end_ts, cover_id, count FROM events ORDER BY (start_ts IS NULL), start_ts DESC")]  # fmt: skip
+        return {
+            "photos": ctx.db.val("SELECT COUNT(*) FROM photos WHERE error IS NULL"),
+            "library": brief(("library", None)),
+            "events": events,
+            "exercises": mentor.exercises(ctx),
+            "plans": shootplan.listing(ctx),
+            "genres": shootplan.GENRES,
+            "gear": shootplan.gear(ctx),
+        }
+
+    @app.get("/api/mentor/review")
+    def mentor_get_review(scope: str, id: int | None = None):
+        scope, sid = _scope(scope, id)
+        return mentor.get_review(ctx, scope, sid) or {"id": None, "scope": scope, "scope_id": sid}
+
+    @app.get("/api/mentor/outgoing")
+    def mentor_outgoing(scope: str, id: int | None = None):
+        """What a review would send to the external model, shown before anything is sent."""
+        scope, sid = _scope(scope, id)
+        try:
+            out = mentor.outgoing(ctx, scope, sid)
+        except KeyError:
+            raise HTTPException(404, "找不到這個事件")
+        out["image_px"] = 384
+        out["via"] = "cli" if cloud.via_cli(ctx.settings, ctx.settings.cloud.provider) else "api"
+        out["provider"] = cloud.LABELS.get(out["provider"], out["provider"])
+        return out
+
+    @app.post("/api/mentor/review")
+    def mentor_review(body: ReviewIn):
+        scope, sid = _scope(body.scope, body.id)
+        if body.mode not in ("cloud", "local", "stats"):
+            raise HTTPException(400, "不支援的講評方式")
+
+        def run(job):
+            job.stage = "拍攝檢討" if scope == "event" else "拍攝習慣診斷"
+            return mentor.review(ctx, scope, sid, body.mode, job.progress)
+
+        return jobs.submit("mentor_review", "大師講評", run).to_dict()
+
+    @app.patch("/api/mentor/exercises/{eid}")
+    def mentor_exercise(eid: int, body: StatusIn):
+        mentor.set_exercise(ctx, eid, body.status)
+        return mentor.exercises(ctx)
+
+    @app.get("/api/mentor/places")
+    def mentor_places(q: str = ""):
+        return shootplan.places(ctx, q)
+
+    @app.post("/api/mentor/plan")
+    def mentor_plan(body: PlanIn):
+        """Light timetable and starting settings are computed offline; the shot list comes from the on-device model."""
+        return shootplan.make(ctx, **body.model_dump())
+
+    @app.get("/api/mentor/plan/{pid}")
+    def mentor_get_plan(pid: int):
+        try:
+            return shootplan.get(ctx, pid)
+        except KeyError:
+            raise HTTPException(404, "找不到這份計畫")
+
+    @app.delete("/api/mentor/plan/{pid}")
+    def mentor_delete_plan(pid: int):
+        shootplan.delete(ctx, pid)
+        return {"ok": True}
+
+    @app.get("/api/mentor/plan/{pid}/sheet")
+    def mentor_sheet(pid: int):
+        try:
+            return Response(shootplan.cheatsheet(ctx, pid), media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
+        except KeyError:
+            raise HTTPException(404, "找不到這份計畫")
+
+    @app.post("/api/mentor/plan/{pid}/export")
+    def mentor_export(pid: int, body: DestIn):
+        try:
+            return shootplan.export(ctx, pid, body.dest)
+        except KeyError:
+            raise HTTPException(404, "找不到這份計畫")
 
     # ----------------------------------------------------- contest wizard
 

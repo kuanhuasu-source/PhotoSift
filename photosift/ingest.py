@@ -69,8 +69,10 @@ COLS = [
     "path", "raw_path", "filename", "size", "mtime", "width", "height", "taken_at", "taken_ts", "time_source",
     "lat", "lon", "camera", "lens", "focal", "aperture", "shutter", "iso",
     "sharp", "exposure", "contrast", "colorful", "tech", "flags", "error", "tz_offset", "meta_v",
+    "shutter_s", "focal35", "exp_program", "exp_bias", "metering", "flash", "wb", "heading",
 ]  # fmt: skip
-META_V = 2  # bump when read_meta learns something new; older rows are re-read without decoding pixels
+META_V = 3  # bump when read_meta learns something new; older rows are re-read without decoding pixels
+LATE_META = ("tz_offset", "shutter_s", "focal35", "exp_program", "exp_bias", "metering", "flash", "wb", "heading")
 
 # Everything derived from pixels is cleared when a file changes on disk.
 RESET = (
@@ -176,14 +178,15 @@ def ingest_folder(
     return {"found": len(files), "processed": done, "added": added, "failed": failed, "removed": len(gone)}
 
 
-def refresh_meta(ctx: Ctx, progress: Callable[[int, int, str], None] = lambda done, total, msg: None) -> int:
+def refresh_meta(ctx: Ctx, progress: Callable[[int, int, str], None] = lambda done, total, msg: None, only: int | None = None) -> int:
     """Re-reads EXIF for rows written before the reader learned a field. Fast: no image is decoded."""
-    rows = ctx.db.all("SELECT id, path FROM photos WHERE meta_v < ? AND error IS NULL", (META_V,))
+    rows = ctx.db.all("SELECT id, path FROM photos WHERE meta_v < ? AND error IS NULL AND (? IS NULL OR id=?)", (META_V, only, only))
     done = 0
     for i, r in enumerate(rows):
         try:
             m = imaging.read_meta(Path(r["path"]))
-            ctx.db.run("UPDATE photos SET tz_offset=?, meta_v=? WHERE id=?", (m.get("tz_offset"), META_V, r["id"]))
+            ctx.db.run(f"UPDATE photos SET {', '.join(k + '=?' for k in LATE_META)}, meta_v=? WHERE id=?",
+                       (*(m.get(k) for k in LATE_META), META_V, r["id"]))  # fmt: skip
             done += 1
         except OSError:
             ctx.db.run("UPDATE photos SET meta_v=? WHERE id=?", (META_V, r["id"]))  # file gone: do not retry forever

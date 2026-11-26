@@ -1,6 +1,7 @@
 import { html, useState, useEffect, useRef, useCallback, api, fail, toast, useApp, Icon, Dialog, Bars, usePickFolder,
   n0, fmtDate, FLAW, CATS, VLM_KEYS, thumb, qs } from './ui.js';
 import { Editor, useRendered } from './editor.js';
+import { MentorPanel } from './mentorpanel.js';
 
 const SORTS = [['time_desc', '拍攝時間（新到舊）'], ['time', '拍攝時間（舊到新）'], ['score', '分數（地端模型評過的在前）'], ['aesthetic', '美感初評'],
   ['tech', '技術品質'], ['rating', '我的星等'], ['taste', '像我會選的']];
@@ -176,7 +177,7 @@ function AnnotateDialog({ onClose }) {
 export function PhotoViewer({ ids, index, onClose, onPatch, startMode = 'info', contestId = null }) {
   const [i, setI] = useState(index);
   const [p, setP] = useState(null);
-  const [mode, setMode] = useState(startMode); // info | edit
+  const [mode, setMode] = useState(startMode); // info | edit | mentor
   const [recipe, setRecipe] = useState(null);
   const [original, setOriginal] = useState(false); // hold to compare with the untouched photo
   const id = ids[i];
@@ -212,6 +213,7 @@ export function PhotoViewer({ ids, index, onClose, onPatch, startMode = 'info', 
       else if (e.key === 'ArrowLeft') setI((x) => Math.max(0, x - 1));
       else if (!p) return;
       else if (e.key === 'e' || e.key === 'E') setMode((m) => (m === 'edit' ? 'info' : 'edit'));
+      else if (e.key === 'm' || e.key === 'M') setMode((m) => (m === 'mentor' ? 'info' : 'mentor'));
       else if (e.key === 'p' || e.key === 'P') setFlag('pick');
       else if (e.key === 'x' || e.key === 'X') setFlag('reject');
       else if (/^[0-5]$/.test(e.key)) patch({ rating: +e.key });
@@ -248,7 +250,9 @@ export function PhotoViewer({ ids, index, onClose, onPatch, startMode = 'info', 
         <div class="seg">
           <button class=${mode === 'info' ? 'on' : ''} onClick=${() => setMode('info')}>資訊</button>
           <button class=${mode === 'edit' ? 'on' : ''} disabled=${!!p.error} onClick=${() => setMode('edit')}>後製 <span class="kbd">E</span></button>
+          <button class=${mode === 'mentor' ? 'on' : ''} disabled=${!!p.error} onClick=${() => setMode('mentor')}>大師 <span class="kbd">M</span></button>
         </div>
+        ${mode === 'mentor' && html`<${MentorPanel} id=${p.id} onJump=${(pid) => { const j = ids.indexOf(pid); if (j >= 0) setI(j); }} />`}
         ${mode === 'edit' && html`<${Editor} photo=${p} recipe=${recipe} setRecipe=${setRecipe} contestId=${contestId}
           onSaved=${(pid, edited) => onPatch && onPatch(pid, { edited: edited ? 1 : 0 })} />`}
         ${mode === 'info' && html`

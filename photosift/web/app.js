@@ -3,6 +3,7 @@ import { Library } from './library.js';
 import { Organize } from './organize.js';
 import { Contests } from './contest.js';
 import { Settings } from './settings.js';
+import { Mentor } from './mentor.js';
 
 function parseHash() {
   const [view = 'library', arg] = location.hash.replace(/^#\/?/, '').split('/');
@@ -21,6 +22,10 @@ function jobSummary(j) {
   if (j.kind === 'contest_local') return `地端評審完成：${r.scored} 張` + (r.agreement != null ? `，與外部評審的一致度 ${r.agreement}` : '') + '。';
   if (j.kind === 'contest_calibrate') return `校準完成：地端與外部評審的一致度 ${r.agreement_before ?? '—'}。`;
   if (j.kind === 'contest_finals') return '決選完成。';
+  if (j.kind === 'mentor_review') {
+    if (r.mode === 'stats') return `統計完成：${n0(r.photos)} 張照片。`;
+    return `講評完成：${r.headline || ''}` + (r.exercises ? `（新增了 ${r.exercises} 個練習）` : '');
+  }
   if (j.kind === 'package') {
     const mb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`);
     return r.kind === 'prelim'
@@ -82,7 +87,8 @@ function App() {
   const startJob = (path, body) => api(path, { method: 'POST', body: body || {} }).then(() => refresh()).catch(fail);
 
   const ctx = { status, refresh, go, openLibrary, startJob, jobTick, running };
-  const nav = [['library', '圖庫', 'grid'], ['organize', '整理', 'layers'], ['contest', '比賽選片', 'trophy'], ['settings', '設定', 'gear']];
+  const nav = [['library', '圖庫', 'grid'], ['organize', '整理', 'layers'], ['contest', '比賽選片', 'trophy'], ['mentor', '大師', 'cap'],
+    ['settings', '設定', 'gear']];
   const s = status || {};
   const local = s.local || {};
   const cloud = s.cloud || {};
@@ -110,6 +116,7 @@ function App() {
         ${route.view === 'library' && html`<${Library} filters=${libFilters} setFilters=${setLibFilters} />`}
         ${route.view === 'organize' && html`<${Organize} tab=${route.arg || 'events'} />`}
         ${route.view === 'contest' && html`<${Contests} id=${route.arg ? +route.arg : null} />`}
+        ${route.view === 'mentor' && html`<${Mentor} arg=${route.arg || 'habits'} />`}
         ${route.view === 'settings' && html`<${Settings} />`}
       </main>
       <${JobBar} job=${s.job} />

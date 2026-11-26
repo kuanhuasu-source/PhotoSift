@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from photosift import contest, grouping, local_vlm, sun, taste, wizard
+from photosift import contest, grouping, ingest, local_vlm, sun, taste, wizard
 from photosift.server import create_app
 
 from .test_server import analyse, wait
@@ -31,7 +31,7 @@ def test_light_is_filled_in_during_analysis(analysed):
     ctx, _ = analysed
     rows = ctx.db.all("SELECT filename, light, sun_elev, meta_v, tz_offset FROM photos ORDER BY filename")
     with_gps = [r for r in rows if r["filename"][0] in "ABC"]
-    assert all(r["sun_elev"] is not None and r["meta_v"] == 2 for r in with_gps)
+    assert all(r["sun_elev"] is not None and r["meta_v"] == ingest.META_V for r in with_gps)
     assert all(r["light"] == "day" for r in with_gps if r["filename"].startswith("A"))  # mid-morning in Taipei
     assert next(r for r in rows if r["filename"] == "old.jpg")["sun_elev"] is None  # no GPS, no capture time
     # an exact offset lets the same evening photos be told apart as golden hour
