@@ -4,6 +4,7 @@ import { Organize } from './organize.js';
 import { Contests } from './contest.js';
 import { Settings } from './settings.js';
 import { Mentor } from './mentor.js';
+import { Exhibitions } from './exhibition.js';
 
 function parseHash() {
   const [view = 'library', arg] = location.hash.replace(/^#\/?/, '').split('/');
@@ -22,6 +23,9 @@ function jobSummary(j) {
   if (j.kind === 'contest_local') return `地端評審完成：${r.scored} 張` + (r.agreement != null ? `，與外部評審的一致度 ${r.agreement}` : '') + '。';
   if (j.kind === 'contest_calibrate') return `校準完成：地端與外部評審的一致度 ${r.agreement_before ?? '—'}。`;
   if (j.kind === 'contest_finals') return '決選完成。';
+  if (j.kind === 'exhibit_propose') return `找到 ${r.ideas} 個可能的系列主題` + (r.named < r.ideas ? '（地端模型沒有連上，先用預設名稱）。' : '。');
+  if (j.kind === 'exhibit_curate') return `策展完成：「${r.title}」，${r.works} 張作品分成 ${r.chapters} 個章節，另有 ${r.reserves} 張候補` + (r.tokens ? `，用了 ${n0(r.tokens)} tokens。` : '。');
+  if (j.kind === 'exhibit_package') return `交件資料夾完成：${r.count} 張作品檔和說明牌簡報${r.zip ? '，已另外打包成 zip' : ''}。原始檔沒有變動。`;
   if (j.kind === 'mentor_review') {
     if (r.mode === 'stats') return `統計完成：${n0(r.photos)} 張照片。`;
     return `講評完成：${r.headline || ''}` + (r.exercises ? `（新增了 ${r.exercises} 個練習）` : '');
@@ -87,7 +91,7 @@ function App() {
   const startJob = (path, body) => api(path, { method: 'POST', body: body || {} }).then(() => refresh()).catch(fail);
 
   const ctx = { status, refresh, go, openLibrary, startJob, jobTick, running };
-  const nav = [['library', '圖庫', 'grid'], ['organize', '整理', 'layers'], ['contest', '比賽選片', 'trophy'], ['mentor', '大師', 'cap'],
+  const nav = [['library', '圖庫', 'grid'], ['organize', '整理', 'layers'], ['contest', '比賽選片', 'trophy'], ['exhibit', '展覽', 'frame'], ['mentor', '大師', 'cap'],
     ['settings', '設定', 'gear']];
   const s = status || {};
   const local = s.local || {};
@@ -116,6 +120,7 @@ function App() {
         ${route.view === 'library' && html`<${Library} filters=${libFilters} setFilters=${setLibFilters} />`}
         ${route.view === 'organize' && html`<${Organize} tab=${route.arg || 'events'} />`}
         ${route.view === 'contest' && html`<${Contests} id=${route.arg ? +route.arg : null} />`}
+        ${route.view === 'exhibit' && html`<${Exhibitions} id=${route.arg ? +route.arg : null} />`}
         ${route.view === 'mentor' && html`<${Mentor} arg=${route.arg || 'habits'} />`}
         ${route.view === 'settings' && html`<${Settings} />`}
       </main>

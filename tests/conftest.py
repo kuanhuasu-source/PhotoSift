@@ -226,6 +226,26 @@ class FakeProvider:
             limit = int(re.search(r"(\d+) 個字以內", text).group(1))
             nums = [int(n) for n in re.findall(r"^作品編號 (\d+)", text, flags=re.M)]
             data = {"entries": [{"id": n, "title": f"名稱{n}", "description": (f"這是作品 {n} 的說明。" * 30)[: limit - 1]} for n in nums]}
+        elif "works" in props:  # exhibition curator: every other candidate, in two chapters, with flaws a real model shows
+            import re
+
+            text = "\n".join(p for p in parts if isinstance(p, str))
+            want = int(re.search(r"選出剛好 (\d+) 張", text).group(1))
+            shown = [int(n) for n in re.findall(r"^(\d+)\. ", text, flags=re.M)]
+            picks = shown[::2][: max(want - 1, 1)]  # one short on purpose
+            rest = [n for n in shown if n not in picks]
+            data = {
+                "title": "靜水流年", "statement": "旅途中停下來的時刻。",
+                "chapters": [{"title": "開場", "idea": "把人帶進來"}, {"title": "收尾", "idea": "安靜地結束"}],
+                "works": [{"no": n, "chapter": 2 if i % 2 else 1, "why": f"理由 {n}"} for i, n in enumerate(picks)] + [{"no": picks[0], "chapter": 1, "why": "重複"},
+                                                                                                          {"no": 999, "chapter": 9, "why": "不存在"}],
+                "reserves": [{"no": n, "chapter": 1, "why": f"可替代 {n}"} for n in rest[:4]],
+                "sequence_note": "由近到遠。", "weak": [{"no": picks[-1], "why": "和系列的色調不合"}, {"no": 999, "why": "x"}],
+                "gaps": ["少一張收尾的大景"],
+            }
+        elif "bio" in props:
+            text = "\n".join(p for p in parts if isinstance(p, str))
+            data = {"bio": "攝影者的簡介。", "statement": "我拍這個系列是因為" + ("有回答" if "攝影者自己的回答" in text else "沒有回答") + "。"}
         elif "headline" in props:  # mentor review: refers to photos by their number on the sheet
             import re
 
@@ -256,7 +276,7 @@ class FakeProvider:
 
 @pytest.fixture
 def fakes(monkeypatch):
-    from photosift import contest, local_vlm, mentor, retouch, submission
+    from photosift import contest, exhibition, local_vlm, mentor, retouch, submission
 
     vlm = FakeVLM()
     prov = FakeProvider()
@@ -265,4 +285,5 @@ def fakes(monkeypatch):
     monkeypatch.setattr(retouch, "get_provider", lambda *a, **k: prov)
     monkeypatch.setattr(submission, "get_provider", lambda *a, **k: prov)
     monkeypatch.setattr(mentor, "get_provider", lambda *a, **k: prov)
+    monkeypatch.setattr(exhibition, "get_provider", lambda *a, **k: prov)
     return vlm, prov

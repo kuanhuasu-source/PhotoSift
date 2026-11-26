@@ -311,36 +311,51 @@ def write_copy(ctx: Ctx, cid: int, only_empty: bool = False, use_cloud: bool = T
         "- id 必須是作品編號。每件作品的說明要有各自的重點，不要套用同一個句型。\n\n"
         + "\n\n".join(_material(e) for e in es)
     )
+    drafts, tokens, model = draft_copy(ctx, user, {e["photo_id"] for e in es}, sp["desc_max"], use_cloud, "copy", cid)
+    valid = {e["photo_id"]: e for e in es}
+    for pid, d in drafts.items():
+        patch = {"description": d["description"]}
+        if not valid[pid]["title"] and d["title"]:
+            patch["title"] = d["title"]
+        update_entry(ctx, cid, pid, patch)
+    still = sum(len(d["description"]) > sp["desc_max"] for d in drafts.values())
+    return {"written": len(drafts), "tokens": tokens, "model": model, "over_limit": still}
+
+
+def draft_copy(ctx: Ctx, user: str, valid: set[int], desc_max: int, use_cloud: bool, purpose: str,
+               cid: int | None = None) -> tuple[dict[int, dict], int, str]:  # fmt: skip
+    """One text-only request for titles and descriptions: {id: {title, description}}, tokens used, model name.
+
+    Models count characters loosely. Anything over the limit goes back once to be tightened, rather than cut mid-sentence.
+    """
     schema = _copy_schema()
     tokens, model = 0, ""
     if use_cloud:
         prov = get_provider(ctx.settings)
         res = prov.generate(system=COPY_SYSTEM, parts=[user], schema=schema, max_tokens=8000)
-        contest.log_call(ctx, res, prov.name, "copy", cid)
+        contest.log_call(ctx, res, prov.name, purpose, cid)
         data, tokens, model = res.data, res.input_tokens + res.output_tokens, res.model
     else:
         vlm = local_vlm.LocalVLM(ctx.settings.local, role="judge")
-        data, model = vlm.chat_json(COPY_SYSTEM + "\n只輸出 JSON。", user, None, schema, max_tokens=400 + 300 * len(es)), vlm.model
-    valid = {e["photo_id"]: e for e in es}
-    drafts = {}
+        data, model = vlm.chat_json(COPY_SYSTEM + "\n只輸出 JSON。", user, None, schema, max_tokens=400 + 300 * len(valid)), vlm.model
+    drafts: dict[int, dict] = {}
     for it in data.get("entries") or []:
         text = str(it.get("description", "")).strip()
         if it.get("id") in valid and text:
             drafts[it["id"]] = {"description": text, "title": str(it.get("title", "")).strip()}
     if not drafts:
         raise CloudError("模型沒有回傳可用的作品說明，請再試一次。")
-    # Models count characters loosely. Anything over the limit goes back once to be tightened, rather than cut mid-sentence.
-    over = {pid: d for pid, d in drafts.items() if len(d["description"]) > sp["desc_max"]}
+    over = {pid: d for pid, d in drafts.items() if len(d["description"]) > desc_max}
     if over:
         ask = (
-            f"下面 {len(over)} 段作品說明超過了字數上限。請各自改寫到 {sp['desc_max']} 個字以內（含標點），"
-            f"以 {int(sp['desc_max'] * 0.85)} 個字左右為目標，保留最重要的一兩個重點，不可以加入新的內容。title 原樣回傳。\n\n"
+            f"下面 {len(over)} 段作品說明超過了字數上限。請各自改寫到 {desc_max} 個字以內（含標點），"
+            f"以 {int(desc_max * 0.85)} 個字左右為目標，保留最重要的一兩個重點，不可以加入新的內容。title 原樣回傳。\n\n"
             + "\n\n".join(f"作品編號 {pid}\ntitle：{d['title']}\n目前有 {len(d['description'])} 個字：{d['description']}" for pid, d in over.items())
         )
         try:
             if use_cloud:
                 res = prov.generate(system=COPY_SYSTEM, parts=[ask], schema=schema, max_tokens=8000)
-                contest.log_call(ctx, res, prov.name, "copy", cid)
+                contest.log_call(ctx, res, prov.name, purpose, cid)
                 again, tokens = res.data, tokens + res.input_tokens + res.output_tokens
             else:
                 again = vlm.chat_json(COPY_SYSTEM + "\n只輸出 JSON。", ask, None, schema, max_tokens=400 + 300 * len(over))
@@ -350,13 +365,7 @@ def write_copy(ctx: Ctx, cid: int, only_empty: bool = False, use_cloud: bool = T
                     drafts[it["id"]]["description"] = text
         except (CloudError, local_vlm.LocalModelError):
             pass  # the longer draft is kept; the checklist will point out that it is over the limit
-    for pid, d in drafts.items():
-        patch = {"description": d["description"]}
-        if not valid[pid]["title"] and d["title"]:
-            patch["title"] = d["title"]
-        update_entry(ctx, cid, pid, patch)
-    still = sum(len(d["description"]) > sp["desc_max"] for d in drafts.values())
-    return {"written": len(drafts), "tokens": tokens, "model": model, "over_limit": still}
+    return drafts, tokens, model
 
 
 # --------------------------------------------------------------------- checks

@@ -8,6 +8,7 @@ The default is SigLIP 2, whose text side is multilingual (Chinese queries work).
 from __future__ import annotations
 
 import os
+import zlib
 import threading
 from pathlib import Path
 from typing import Callable, Iterable
@@ -92,7 +93,7 @@ class FakeEmbedder(Embedder):
     def texts(self, texts: list[str]) -> np.ndarray:
         out = []
         for s in texts:
-            rng = np.random.default_rng(abs(hash(s)) % (2**32))
+            rng = np.random.default_rng(zlib.crc32(s.encode("utf-8")))  # not hash(): that changes from one run to the next
             v = rng.normal(size=self.dim)
             out.append(v / np.linalg.norm(v))
         return np.stack(out).astype(np.float32)

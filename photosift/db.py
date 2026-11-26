@@ -150,6 +150,32 @@ CREATE TABLE IF NOT EXISTS plans (
     data TEXT NOT NULL          -- json: light timetable, starting settings, shot list, reminders
 );
 
+-- A solo exhibition: a fixed number of pictures that belong together, in hanging order.
+CREATE TABLE IF NOT EXISTS exhibitions (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    spec TEXT NOT NULL,         -- json: how many works, the frame, the author
+    themes TEXT,                -- json: series ideas proposed from the library
+    theme TEXT,                 -- json: the one chosen, with its ranked candidates
+    curation TEXT,              -- json: the curator's reading: title, statement, chapters, weak links, gaps
+    profile TEXT,               -- json: interview answers, biography and statement for the poster
+    packages TEXT               -- json: log of packages built
+);
+
+CREATE TABLE IF NOT EXISTS exhibition_works (
+    exhibition_id INTEGER NOT NULL REFERENCES exhibitions(id) ON DELETE CASCADE,
+    photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'work',      -- work | reserve
+    chapter INTEGER NOT NULL DEFAULT 0,     -- index into the curation's chapters
+    position INTEGER NOT NULL DEFAULT 0,    -- hanging order among the works
+    title TEXT, description TEXT,
+    questions TEXT,             -- json: [{q, options, a}] asked by the local model, answered by the user
+    why TEXT,                   -- the curator's reason for choosing it
+    use_edit INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (exhibition_id, photo_id)
+);
+
 CREATE TABLE IF NOT EXISTS cloud_calls (
     id INTEGER PRIMARY KEY,
     ts REAL NOT NULL,

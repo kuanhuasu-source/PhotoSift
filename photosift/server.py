@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (cloud, config, contest, editing, export, grouping, imaging, local_vlm, mentor, pipeline, retouch, shootplan,
-               submission, sun, taste, taxonomy, wizard)  # fmt: skip
+from . import (cloud, config, contest, editing, exhibition, export, grouping, imaging, local_vlm, mentor, pipeline, retouch,
+               shootplan, submission, sun, taste, taxonomy, wizard)  # fmt: skip
 from .cloud import CloudError
 from .context import Ctx
 from .db import photo_dict
@@ -163,6 +163,49 @@ class PlanIn(BaseModel):
 
 class DestIn(BaseModel):
     dest: str
+
+
+class ExhibitionIn(BaseModel):
+    name: str | None = None
+    spec: dict | None = None
+
+
+class ThemeIn(BaseModel):
+    key: str | None = None
+    text: str | None = None
+
+
+class PoolIn(BaseModel):
+    excluded: list[int] | None = None
+    pinned: list[int] | None = None
+
+
+class ModeIn(BaseModel):
+    mode: str = "cloud"
+
+
+class WorkIn(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    use_edit: bool | None = None
+    questions: list | None = None
+
+
+class MoveIn(BaseModel):
+    by: int = 0
+    swap_with: int | None = None
+    role: str | None = None
+
+
+class ProfileIn(BaseModel):
+    questions: list | None = None
+    bio: str | None = None
+    statement: str | None = None
+
+
+class HandInIn(BaseModel):
+    dest: str
+    zip: bool = False
 
 
 class WizardIn(BaseModel):
@@ -823,6 +866,152 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
             return submission.build_full(ctx, cid, body.dest, body.zip, job.progress)
 
         return jobs.submit("package", "打包投稿檔案", run).to_dict()
+
+    # ------------------------------------------------------------ exhibition
+
+    def _show(xid: int) -> dict:
+        try:
+            return exhibition.state(ctx, xid)
+        except KeyError:
+            raise HTTPException(404, "找不到這個展覽")
+
+    @app.get("/api/exhibitions")
+    def exhibitions():
+        return exhibition.listing(ctx)
+
+    @app.post("/api/exhibitions")
+    def create_exhibition(body: ExhibitionIn):
+        return _show(exhibition.create(ctx, body.name or "", body.spec))
+
+    @app.get("/api/exhibitions/{xid}")
+    def get_exhibition(xid: int):
+        return _show(xid)
+
+    @app.put("/api/exhibitions/{xid}")
+    def put_exhibition(xid: int, body: ExhibitionIn):
+        _show(xid)
+        exhibition.update(ctx, xid, body.name, body.spec)
+        return _show(xid)
+
+    @app.delete("/api/exhibitions/{xid}")
+    def delete_exhibition(xid: int):
+        exhibition.delete(ctx, xid)
+        return {"ok": True}
+
+    @app.post("/api/exhibitions/{xid}/propose")
+    def exhibition_propose(xid: int):
+        """Series ideas found in the library. On-device only."""
+        _show(xid)
+
+        def run(job):
+            job.stage = "尋找系列主題"
+            ideas = exhibition.propose(ctx, xid, True, job.progress)
+            return {"ideas": len(ideas), "named": sum(1 for i in ideas if i["named_by"])}
+
+        return jobs.submit("exhibit_propose", "主題提案", run).to_dict()
+
+    @app.post("/api/exhibitions/{xid}/theme")
+    def exhibition_theme(xid: int, body: ThemeIn):
+        _show(xid)
+        exhibition.choose(ctx, xid, body.key, body.text)
+        return _show(xid)
+
+    @app.put("/api/exhibitions/{xid}/pool")
+    def exhibition_pool(xid: int, body: PoolIn):
+        _show(xid)
+        exhibition.set_pool(ctx, xid, body.excluded, body.pinned)
+        return _show(xid)
+
+    @app.get("/api/exhibitions/{xid}/outgoing")
+    def exhibition_outgoing(xid: int):
+        """What curation would send to the external model, shown before anything is sent."""
+        _show(xid)
+        out = exhibition.outgoing(ctx, xid)
+        out["via"] = "cli" if cloud.via_cli(ctx.settings, ctx.settings.cloud.provider) else "api"
+        out["provider"] = cloud.LABELS.get(out["provider"], out["provider"])
+        return out
+
+    @app.post("/api/exhibitions/{xid}/curate")
+    def exhibition_curate(xid: int, body: ModeIn):
+        _show(xid)
+        if body.mode not in ("cloud", "local"):
+            raise HTTPException(400, "不支援的策展方式")
+
+        def run(job):
+            job.stage = "策展"
+            return exhibition.curate(ctx, xid, body.mode, job.progress)
+
+        return jobs.submit("exhibit_curate", "策展", run).to_dict()
+
+    @app.patch("/api/exhibitions/{xid}/works/{pid}")
+    def exhibition_work(xid: int, pid: int, body: WorkIn):
+        _show(xid)
+        exhibition.update_work(ctx, xid, pid, body.model_dump(exclude_none=True))
+        return _show(xid)
+
+    @app.post("/api/exhibitions/{xid}/works/{pid}/arrange")
+    def exhibition_arrange(xid: int, pid: int, body: MoveIn):
+        """Moves a work along the wall, swaps it with a reserve, or changes whether it hangs at all."""
+        _show(xid)
+        try:
+            if body.swap_with is not None:
+                exhibition.swap(ctx, xid, pid, body.swap_with)
+            elif body.role is not None:
+                exhibition.set_role(ctx, xid, pid, body.role)
+            elif body.by:
+                exhibition.move(ctx, xid, pid, body.by)
+        except KeyError:
+            raise HTTPException(404, "找不到這張照片")
+        return _show(xid)
+
+    @app.post("/api/exhibitions/{xid}/works/{pid}/questions")
+    def exhibition_questions(xid: int, pid: int):
+        _show(xid)
+        return {"questions": exhibition.ask_background(ctx, xid, pid)}
+
+    @app.post("/api/exhibitions/{xid}/copy")
+    def exhibition_copy(xid: int, body: CopyIn):
+        """Titles and captions from text alone. No photo is uploaded."""
+        _show(xid)
+        out = exhibition.write_copy(ctx, xid, body.only_empty, body.use_cloud)
+        return {**out, **_show(xid)}
+
+    @app.post("/api/exhibitions/{xid}/profile/questions")
+    def exhibition_profile_questions(xid: int):
+        _show(xid)
+        exhibition.ask_profile(ctx, xid)
+        return _show(xid)
+
+    @app.put("/api/exhibitions/{xid}/profile")
+    def exhibition_profile(xid: int, body: ProfileIn):
+        _show(xid)
+        exhibition.set_profile(ctx, xid, body.model_dump(exclude_none=True))
+        return _show(xid)
+
+    @app.post("/api/exhibitions/{xid}/profile/write")
+    def exhibition_profile_write(xid: int, body: CopyIn):
+        _show(xid)
+        out = exhibition.write_profile(ctx, xid, body.use_cloud)
+        return {"written": out, **_show(xid)}
+
+    @app.post("/api/exhibitions/{xid}/package")
+    def exhibition_package(xid: int, body: HandInIn):
+        _show(xid)
+
+        def run(job):
+            job.stage = "製作展覽交件"
+            return exhibition.build(ctx, xid, body.dest, body.zip, job.progress)
+
+        return jobs.submit("exhibit_package", "展覽交件", run).to_dict()
+
+    @app.post("/api/exhibitions/{xid}/reveal")
+    def exhibition_reveal(xid: int, body: RevealIn):
+        _show(xid)
+        folder = exhibition.package_folder(ctx, xid, body.at)
+        if folder is None:
+            raise HTTPException(404, "這個資料夾已經不在原本的位置")
+        _show_in_file_manager(str(folder))
+        return {"ok": True}
 
     # ---------------------------------------------------------- mentor mode
 
