@@ -41,6 +41,8 @@ DEFAULT_SPEC = {
     "tone": "詩意",
     "author": "",
     "exif": "all",
+    "poster_note": "",       # dates and place for the poster, once the organiser has set them
+    "poster_style": "light",
 }
 GOOD_DPI = 150
 SHEET = 16
@@ -83,6 +85,8 @@ def clean_spec(s: dict) -> dict:
         "tone": s.get("tone") if s.get("tone") in submission.TONES else DEFAULT_SPEC["tone"],
         "author": str(s.get("author") or "").strip()[:40],
         "exif": s.get("exif") if s.get("exif") in submission.EXIF_POLICIES else "all",
+        "poster_note": str(s.get("poster_note") or "").strip()[:80],
+        "poster_style": s.get("poster_style") if s.get("poster_style") in ("light", "dark") else "light",
     }
 
 
@@ -1054,9 +1058,34 @@ def printable(ctx: Ctx, w: dict, spec: dict) -> Image.Image:
     return submission.to_srgb(to_frame(im, spec))
 
 
+def _poster_words(x: dict) -> dict:
+    cur, profile, spec = x["curation"] or {}, x["profile"] or {}, x["spec"]
+    return {"title": cur.get("title") or (x["theme"] or {}).get("title") or x["name"], "exhibition": x["name"], "author": spec["author"],
+            "statement": profile.get("statement") or cur.get("statement", ""), "note": spec["poster_note"], "style": spec["poster_style"]}  # fmt: skip
+
+
+def poster_preview(ctx: Ctx, xid: int) -> bytes:
+    """The poster at screen size, from the cached previews, so it can be looked at before anything is exported."""
+    from . import poster
+
+    x = get(ctx, xid)
+    images = []
+    for w in works(ctx, x):
+        if w["role"] != "work" or w["missing"]:
+            continue
+        im, _ = imaging.load_image(ctx.preview(w["photo_id"], 1024))
+        if w["use_edit"]:
+            im = editing.render(im, retouch.load(ctx, w["photo_id"])["recipe"])
+        images.append(to_frame(im, x["spec"]))
+    if not images:
+        raise ValueError("還沒有展出的作品。")
+    canvas, _ = poster.render(images, scale=0.36, **_poster_words(x))
+    return imaging.jpeg_bytes(canvas, 88)
+
+
 def build(ctx: Ctx, xid: int, dest: str, make_zip: bool = False, progress=lambda done, total, msg: None) -> dict:
     """Everything the organiser asked for: the print files, the caption cards with the biography, as one folder."""
-    from . import deck
+    from . import deck, poster
 
     x = get(ctx, xid)
     spec = x["spec"]
@@ -1065,9 +1094,9 @@ def build(ctx: Ctx, xid: int, dest: str, make_zip: bool = False, progress=lambda
         raise ValueError("沒有可以輸出的作品。")
     folder = submission._free(Path(dest).expanduser(), f"{submission._safe(x['name'])}_展覽交件")
     (folder / "作品").mkdir(parents=True)
-    slides, total = [], 0
+    slides, total, written = [], 0, []
     for i, w in enumerate(ws, 1):
-        progress(i - 1, len(ws) + 1, f"輸出作品：{w['title'] or w['filename']}")
+        progress(i - 1, len(ws) + 2, f"輸出作品：{w['title'] or w['filename']}")
         im = printable(ctx, w, spec)
         extra = {"icc_profile": submission._SRGB}
         exif = submission._exif_for(Path(w["path"]), spec["exif"])
@@ -1076,6 +1105,7 @@ def build(ctx: Ctx, xid: int, dest: str, make_zip: bool = False, progress=lambda
         name = f"{i:02d}_{submission._safe(w['title']) or '未命名'}.jpg"
         target = submission._free(folder / "作品", name)
         im.save(target, "JPEG", quality=95, subsampling=0, **extra)
+        written.append(target)
         total += target.stat().st_size
         portrait = im.height > im.width
         size = f"{spec['frame_h']:g}×{spec['frame_w']:g} 公分" if portrait else f"{spec['frame_w']:g}×{spec['frame_h']:g} 公分"
@@ -1083,7 +1113,9 @@ def build(ctx: Ctx, xid: int, dest: str, make_zip: bool = False, progress=lambda
                        "size": f"{size}（{im.width}×{im.height} 像素）", "description": w["description"] or "",
                        "chapter": w["chapter"],
                        "image": imaging.jpeg_bytes(imaging.resized(im, 1800), 86)})  # fmt: skip
-    progress(len(ws), len(ws) + 1, "製作說明牌與個人簡介")
+    progress(len(ws), len(ws) + 2, "製作海報")
+    sheet = poster.build(folder / "展覽海報.jpg", folder / "展覽海報.pdf", written, **_poster_words(x))
+    progress(len(ws) + 1, len(ws) + 2, "製作說明牌與個人簡介")
     cur, profile = x["curation"] or {}, x["profile"] or {}
     pptx = folder / "作品說明牌與個人簡介.pptx"
     deck.build(pptx, exhibition=x["name"], series=cur.get("title") or (x["theme"] or {}).get("title", ""), author=spec["author"],
@@ -1094,9 +1126,9 @@ def build(ctx: Ctx, xid: int, dest: str, make_zip: bool = False, progress=lambda
     text += [f"{s['no']:02d}　{s['title']}　{s['gear']}　{s['size']}\n　　{s['description']}" for s in slides]
     (folder / "個人簡介與作品清單.txt").write_text("\n".join(text), "utf-8")
     out = {"folder": str(folder), "zip": None, "count": len(ws), "bytes": total, "pptx": pptx.name, "pptx_bytes": pptx.stat().st_size,
-           "at": time.time()}  # fmt: skip
+           "poster": "展覽海報.jpg", "poster_text": sheet["text"], "at": time.time()}  # fmt: skip
     if make_zip:
-        progress(len(ws), len(ws) + 1, "壓縮中")
+        progress(len(ws) + 1, len(ws) + 2, "壓縮中")
         archive = str(folder) + ".zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
             for f in sorted(folder.rglob("*")):
@@ -1105,7 +1137,7 @@ def build(ctx: Ctx, xid: int, dest: str, make_zip: bool = False, progress=lambda
         out["zip"] = archive
     log = (x["packages"] or [])[-9:] + [out]
     _put(ctx, xid, packages=log)
-    progress(len(ws) + 1, len(ws) + 1, "完成")
+    progress(len(ws) + 2, len(ws) + 2, "完成")
     return out
 
 

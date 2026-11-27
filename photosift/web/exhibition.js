@@ -173,6 +173,7 @@ function Exhibition({ id, onEdit, onDeleted }) {
   const [view, setView] = useState(null);
   const [zip, setZip] = useState(false);
   const [picker, setPicker] = useState(false);
+  const [posterAt, setPosterAt] = useState(0);      // non-zero while the poster preview is open; also busts the image cache
   const [pickFolder, folderDlg] = usePickFolder();
   const base = '/exhibitions/' + id;
   const load = useCallback(() => api(base).then(setX).catch(fail), [id]);
@@ -333,13 +334,21 @@ function Exhibition({ id, onEdit, onDeleted }) {
     <//>
 
     <${Step} ix="5" done=${x.packages.length > 0} title="交件"
-      hint=${`輸出主辦單位要的三樣東西：${sp.count} 張裁成畫框比例的作品檔、每張一頁的說明牌簡報（PowerPoint，校稿時可以直接改字），以及個人簡介。原始檔只會被讀取，不會更動。`}>
+      hint=${`輸出主辦單位要的三樣東西：${sp.count} 張裁成畫框比例的作品檔、每張一頁的說明牌簡報（PowerPoint，校稿時可以直接改字），以及個人簡介；另外附一張放了全部作品的海報。原始檔只會被讀取，不會更動。`}>
       <div class="row wrap top gap-l">
         <div class="field" style="width:180px"><span>創作者姓名</span><input type="text" maxlength="40" value=${sp.author} onChange=${(e) => setSpec('author', e.target.value)} /></div>
         <div class="field" style="width:220px"><span>作品檔內的拍攝資訊（EXIF）</span><select value=${sp.exif} onChange=${(e) => setSpec('exif', e.target.value)}>
           ${EXIF.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div>
         <div class="field" style="width:150px"><span>作品說明字數上限</span><input type="number" min="20" step="10" value=${sp.desc_max} onChange=${(e) => setSpec('desc_max', +e.target.value)} /></div>
       </div>
+      <div class="row wrap top gap-l">
+        <div class="field" style="width:320px"><span>海報上的展期與地點（選填，排定後再填）</span>
+          <input type="text" maxlength="80" value=${sp.poster_note} placeholder="例如：2027.01.05 – 01.30　一樓藝廊" onChange=${(e) => setSpec('poster_note', e.target.value)} /></div>
+        <div class="field" style="width:130px"><span>海報底色</span><select value=${sp.poster_style} onChange=${(e) => setSpec('poster_style', e.target.value)}>
+          <option value="light">白底</option><option value="dark">黑底</option></select></div>
+        <div class="field"><span> </span><button class="btn" disabled=${!x.works.length} onClick=${() => setPosterAt(Date.now())}>預覽海報</button></div>
+      </div>
+      <p class="small muted">海報是 A3 直式（300 dpi 的 JPEG 和 PDF），放上系列名稱、創作者、創作自述和全部作品，依展出順序排列。正式的展覽海報由主辦單位製作，這一張可以當作參考或自己留存。</p>
       <ul class="checks">${x.checks.map((c) => html`<li class=${c.level}><b>${MARK[c.level]}</b><span>${c.text}</span></li>`)}</ul>
       <div class="row wrap"><button class="btn primary" disabled=${running || !x.works.length} onClick=${pack}><${Icon} name="out" size=${14} /> 製作交件資料夾…</button>
         <label class="check small"><input type="checkbox" checked=${zip} onChange=${(e) => setZip(e.target.checked)} /> 同時打包成一個 zip</label>
@@ -358,6 +367,11 @@ function Exhibition({ id, onEdit, onDeleted }) {
       <p class="muted">下面這 ${confirm.photo_ids.length} 張會拼成 ${confirm.sheets} 張編號的縮圖總表送出（每格 384px，不含拍攝時間、相機與 GPS），連同地端模型為每張寫的文字說明和列印解析度。
         策展人會從中選出 ${confirm.count} 張。原始檔不會上傳。</p>
       <div class="thumbs">${confirm.photo_ids.map((pid) => html`<img loading="lazy" src=${thumb(pid)} alt="" />`)}</div>
+    <//>`}
+    ${posterAt > 0 && html`<${Dialog} wide title="海報預覽" sub="A3 直式。這是縮小的預覽，輸出時是 3508 × 4961 像素。" onClose=${() => setPosterAt(0)}
+      footer=${html`<span class="small muted grow">改了展期、底色、作品順序或創作自述之後，重新按「預覽海報」就會更新。</span>
+        <button class="btn" onClick=${() => setPosterAt(0)}>關閉</button>`}>
+      <img class="posterprev" src=${`/api${base}/poster?t=${posterAt}`} alt="海報預覽" />
     <//>`}
     ${picker && html`<${SeedPicker} base=${base} count=${sp.count} onClose=${() => setPicker(false)} onDone=${(r) => { setX(r); setPicker(false); }} />`}
     ${view && html`<${PhotoViewer} ids=${view.ids} index=${view.index} startMode=${view.mode || 'info'} onClose=${() => { setView(null); load(); }} />`}

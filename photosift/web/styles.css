@@ -463,3 +463,4 @@ iframe.sheet { width: 100%; height: 62vh; border: 0; border-radius: 8px; backgro
 .pickgrid i { position: absolute; left: 5px; top: 5px; width: 18px; height: 18px; border-radius: 4px; background: rgba(0,0,0,.7); color: var(--accent); font-size: 11px; font-style: normal; font-weight: 700; line-height: 18px; text-align: center; }
 .pickgrid .chip { position: absolute; left: 5px; bottom: 5px; height: 18px; font-size: 11px; background: rgba(0,0,0,.72); color: #fff; }
 .pickgrid .chip.bad { color: var(--bad); }
+img.posterprev { display: block; max-width: 100%; max-height: 68vh; margin: 0 auto; border-radius: 3px; box-shadow: 0 4px 30px rgba(0,0,0,.55); }

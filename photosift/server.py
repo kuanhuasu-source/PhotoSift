@@ -1001,6 +1001,12 @@ def create_app(ctx: Ctx | None = None) -> FastAPI:
         out = exhibition.write_profile(ctx, xid, body.use_cloud)
         return {"written": out, **_show(xid)}
 
+    @app.get("/api/exhibitions/{xid}/poster")
+    def exhibition_poster(xid: int):
+        """The poster at screen size, to look at before exporting."""
+        _show(xid)
+        return Response(exhibition.poster_preview(ctx, xid), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
     @app.post("/api/exhibitions/{xid}/package")
     def exhibition_package(xid: int, body: HandInIn):
         _show(xid)

@@ -12,7 +12,7 @@ from PIL import Image, ImageCms
 from pptx import Presentation
 from pptx.oxml.ns import qn
 
-from photosift import deck, exhibition, imaging, pipeline
+from photosift import deck, exhibition, imaging, pipeline, poster
 from photosift.jobs import Job
 from photosift.server import create_app
 
@@ -393,11 +393,57 @@ def test_the_hand_in_folder(ready, tmp_path):
     assert "王小明的簡介。" in bio and "我的創作自述。" in bio
     text = (folder / "個人簡介與作品清單.txt").read_text("utf-8")
     assert "【個人簡介】" in text and f"{no:02d}　四比三" in text
+    sheet = Image.open(folder / "展覽海報.jpg")  # every work on one A3 sheet at print resolution
+    assert sheet.size == (3508, 4961) and tuple(round(v) for v in sheet.info["dpi"]) == (300, 300) and out["poster"] == "展覽海報.jpg"
+    assert (folder / "展覽海報.pdf").read_bytes()[:5] == b"%PDF-"
     with zipfile.ZipFile(out["zip"]) as z:
-        assert len(z.namelist()) == 8 and all(n.startswith(folder.name + "/") for n in z.namelist())
+        assert len(z.namelist()) == 10 and all(n.startswith(folder.name + "/") for n in z.namelist())
     assert {p: p.read_bytes() for p in root.iterdir()} == before  # originals untouched
     assert exhibition.state(ctx, xid)["packages"][0]["exists"] and exhibition.package_folder(ctx, xid, out["at"]) == folder
     assert Path(exhibition.build(ctx, xid, str(tmp_path / "out"))["folder"]).name.endswith("_2")  # a second run does not overwrite
+
+
+def test_poster_rows_fill_the_width_in_hanging_order():
+    wide, tall = 1.5, 2 / 3
+    assert poster.split_rows([wide] * 6, 2) == [[0, 1, 2], [3, 4, 5]] and poster.split_rows([wide] * 5, 9) == [[0], [1], [2], [3], [4]]
+    assert poster.split_rows([wide, tall, tall, wide, wide], 2) == [[0, 1, 2], [3, 4]]  # two upright works take the room of one and a bit
+    for aspects in ([wide] * 20, [wide] * 10, [wide, tall, wide, wide, tall, wide, wide], [wide] * 3, [tall]):
+        rows = poster.layout(aspects, 3000, 3200, 30)
+        cells = [c for row in rows for c in row]
+        assert [c[0] for c in cells] == list(range(len(aspects)))  # reading order is hanging order
+        assert all(abs(w / h - aspects[i]) < 1e-6 for i, _, _, w, h in cells)  # no picture is stretched or cropped
+        assert all(x >= -1e-6 and x + w <= 3000 + 1e-6 and y >= -1e-6 and y + h <= 3200 + 1e-6 for _, x, y, w, h in cells)
+        for row in rows:
+            assert all(abs(c[4] - row[0][4]) < 1e-6 for c in row)  # one height per row
+            assert all(b[1] - (a[1] + a[3]) > 0 for a, b in zip(row, row[1:]))  # and no overlap
+    twenty = poster.layout([wide] * 20, 3000, 3200, 30)
+    assert [len(r) for r in twenty] == [4, 4, 4, 4, 4] and abs(sum(c[3] for c in twenty[0]) + 90 - 3000) < 1e-6  # full width, lined up with the text
+    ten = poster.layout([wide] * 10, 3000, 3200, 30)
+    assert len(ten) == 4 and sum(r[0][4] for r in ten) > 0.9 * 3200 - 90  # shrunk a little to use the sheet rather than leave it half empty
+    assert poster.layout([], 3000, 3200, 30) == []
+
+
+def test_poster_text_and_missing_fonts(monkeypatch):
+    from PIL import ImageDraw, ImageFont
+
+    ims = [Image.new("RGB", (900, 600), (200, 40, 40)), Image.new("RGB", (600, 900), (40, 200, 40)), Image.new("RGB", (900, 600), (40, 40, 200))]
+    canvas, info = poster.render(ims, title="靜水流年", exhibition="攝影展", author="王小明", statement="自述" * 30, style="dark", scale=0.2)
+    assert canvas.size == (701, 992) and info["per_row"] and sum(info["per_row"]) == 3 and canvas.getpixel((3, 3)) == (22, 22, 22)
+    colours = {c for _, c in canvas.getcolors(maxcolors=1 << 24)}
+    assert {(200, 40, 40), (40, 200, 40), (40, 40, 200)} <= colours  # all three works are on the sheet
+    # a machine with no Chinese font still gets a poster: pictures only, and it says so
+    monkeypatch.setitem(poster._found, "fonts", (None, None))
+    bare, info = poster.render(ims, title="靜水流年", author="王小明", scale=0.2)
+    assert info["text"] is False and {(200, 40, 40), (40, 200, 40)} <= {c for _, c in bare.getcolors(maxcolors=1 << 24)}
+    assert set(bare.crop((0, 0, 701, 40)).getcolors()[0][1]) == {255}  # nothing drawn where the title would be
+    draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    font = ImageFont.load_default()
+    lines = poster.wrap(draw, "abcdefghij，klmnop。qrstuvwxyz", font, draw.textlength("abcdefghij", font=font) + 0.5, 9)
+    assert lines[0] == "abcdefghij，" and not any(ln[0] in poster.NO_LINE_START for ln in lines)  # a comma never starts a line
+    cut = poster.wrap(draw, "a" * 400, font, 60, 2)
+    assert len(cut) == 2 and cut[-1].endswith("…") and draw.textlength(cut[-1], font=font) <= 60
+    spec = exhibition.clean_spec({"poster_style": "neon", "poster_note": " 2027.01.05–01.30 一樓藝廊 " + "x" * 200})
+    assert spec["poster_style"] == "light" and spec["poster_note"].startswith("2027.01.05") and len(spec["poster_note"]) == 80
 
 
 def test_the_deck_is_ordinary_editable_slides(tmp_path):
@@ -475,8 +521,11 @@ def test_exhibition_over_http(show, fakes, tmp_path):
         assert s["profile"]["bio"] == "改過的"
         s = client.put(f"/api/exhibitions/{xid}", json={"name": "改名的個展", "spec": {"author": "王小明"}}).json()
         assert s["name"] == "改名的個展" and s["spec"]["author"] == "王小明" and s["spec"]["count"] == 5
+        preview = client.get(f"/api/exhibitions/{xid}/poster")
+        assert preview.headers["content-type"] == "image/jpeg" and Image.open(io.BytesIO(preview.content)).size == (1262, 1785)
         client.post(f"/api/exhibitions/{xid}/package", json={"dest": str(tmp_path / "x")})
         j = wait(client)
         assert j["status"] == "done" and j["result"]["count"] == 5 and (Path(j["result"]["folder"]) / j["result"]["pptx"]).exists()
+        assert (Path(j["result"]["folder"]) / j["result"]["poster"]).exists()
         assert client.post(f"/api/exhibitions/{xid}/reveal", json={"at": 1.0}).status_code == 404
         assert client.delete(f"/api/exhibitions/{xid}").json() == {"ok": True} and client.get(f"/api/exhibitions/{xid}").status_code == 404
